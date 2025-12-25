@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS scan_events (
   user_id TEXT NOT NULL DEFAULT 'anonymous',
   original_filename TEXT,
   file_sha256 TEXT NOT NULL,
+  valid_signature BOOLEAN NOT NULL DEFAULT FALSE,
   score INTEGER,
   risk_level TEXT,
   scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

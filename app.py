@@ -306,6 +306,7 @@ with tab_scan:
                     user_id="anonymous",
                     original_filename=uploaded_file.name,
                     file_sha256=file_hash,
+                    valid_signature=bool(sig_valid),
                     score=risk_score,
                     risk_level=risk_level,
                     metadata={
@@ -346,6 +347,12 @@ with tab_dashboard:
 
             recent = fetch_recent_scans(limit=int(recent_limit))
             file_summary = fetch_file_last_seen(limit_files=int(file_limit))
+
+            # Friendlier boolean display
+            if recent:
+                for r in recent:
+                    if "valid_signature" in r:
+                        r["Signature"] = "✅" if r.get("valid_signature") else "❌"
 
             # Top metrics
             if recent:

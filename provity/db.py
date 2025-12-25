@@ -83,6 +83,26 @@ def ensure_schema(schema_path: str | os.PathLike[str] = DEFAULT_SCHEMA_PATH) -> 
     with connect(readonly=False) as conn:
         with conn.cursor() as cur:
             cur.execute(ddl)
+
+            # ---- Lightweight migrations (idempotent) ----
+            # Add `valid_signature` column if it doesn't exist.
+            cur.execute(
+                """
+                ALTER TABLE scan_events
+                ADD COLUMN IF NOT EXISTS valid_signature BOOLEAN NOT NULL DEFAULT FALSE
+                """
+            )
+
+            # Backfill existing rows from metadata.signature_valid when available.
+            # We only update rows that are still FALSE, so rerunning is safe.
+            cur.execute(
+                """
+                UPDATE scan_events
+                SET valid_signature = TRUE
+                WHERE valid_signature = FALSE
+                  AND LOWER(COALESCE(metadata->>'signature_valid', '')) IN ('true', 't', '1', 'yes')
+                """
+            )
         conn.commit()
 
 
@@ -91,6 +111,7 @@ def insert_scan_event(
     user_id: str = "anonymous",
     original_filename: str | None,
     file_sha256: str,
+    valid_signature: bool = False,
     score: int | None,
     risk_level: str | None,
     metadata: dict[str, Any] | None = None,
@@ -102,10 +123,10 @@ def insert_scan_event(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO scan_events (user_id, original_filename, file_sha256, score, risk_level, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                INSERT INTO scan_events (user_id, original_filename, file_sha256, valid_signature, score, risk_level, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
-                (user_id, original_filename, file_sha256, score, risk_level, json.dumps(metadata)),
+                (user_id, original_filename, file_sha256, bool(valid_signature), score, risk_level, json.dumps(metadata)),
             )
         conn.commit()
 
@@ -126,6 +147,7 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
                                     COALESCE(metadata->>'signature_signer', '') AS signature_signer,
                                     COALESCE(metadata->>'signature_issuer', '') AS signature_issuer,
                   file_sha256,
+                                    valid_signature,
                   score,
                   risk_level
                 FROM scan_events
@@ -146,8 +168,9 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
             "signature_signer": r[5] or "",
             "signature_issuer": r[6] or "",
             "file_sha256": r[7],
-            "score": r[8],
-            "risk_level": r[9],
+            "valid_signature": bool(r[8]),
+            "score": r[9],
+            "risk_level": r[10],
         }
         for r in rows
     ]
