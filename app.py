@@ -3,7 +3,7 @@ import tempfile
 import os
 
 from provity.risk import compute_risk_assessment
-from provity.scanners import scan_virus_clamav, static_analysis, verify_signature
+from provity.scanners import scan_virus_clamav, static_analysis, verify_signature_detailed
 
 # Page Configuration
 st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
@@ -30,8 +30,16 @@ if uploaded_file is not None:
     # 1. Signature Verification
     with col1:
         st.subheader("1️⃣ Signature Verification")
+        enable_revocation = st.checkbox(
+            "Enable online revocation check (OCSP/CRL)",
+            value=False,
+            help="May require network access. Support depends on the verification backend.",
+        )
         with st.spinner('Checking Signature...'):
-            sig_valid, sig_msg, sig_info = verify_signature(tmp_path)
+            sig_detail = verify_signature_detailed(tmp_path, enable_revocation=enable_revocation)
+            sig_valid = bool(sig_detail.get("valid"))
+            sig_msg = str(sig_detail.get("raw_log") or "")
+            sig_info = {"signer": sig_detail.get("signer_cn") or "Unknown"}
         
         if sig_valid:
             st.success("✅ Valid Signature")
@@ -39,6 +47,30 @@ if uploaded_file is not None:
         else:
             st.error("❌ Invalid / Unsigned")
             st.warning("Digital signature is missing or invalid.")
+
+        with st.expander("Structured Details"):
+            st.write(f"**Backend:** {sig_detail.get('backend', 'unknown')}")
+            st.write(f"**Subject:** {sig_detail.get('subject') or 'N/A'}")
+            st.write(f"**Issuer:** {sig_detail.get('issuer') or 'N/A'}")
+            st.write(f"**Validity:** {sig_detail.get('not_before') or 'N/A'} → {sig_detail.get('not_after') or 'N/A'}")
+            ts_present = sig_detail.get("timestamp_present")
+            st.write(f"**Timestamp Present:** {'Yes' if ts_present else 'No' if ts_present is not None else 'Unknown'}")
+
+            if enable_revocation:
+                rev_checked = bool(sig_detail.get("revocation_checked"))
+                rev_ok = sig_detail.get("revocation_ok")
+                st.write(f"**Revocation Check:** {'Supported' if rev_checked else 'Not supported/Not performed'}")
+                if rev_ok is True:
+                    st.write("**Revocation Status:** OK")
+                elif rev_ok is False:
+                    st.write("**Revocation Status:** Failed")
+                else:
+                    st.write("**Revocation Status:** Unknown")
+                if sig_detail.get("revocation_note"):
+                    st.caption(str(sig_detail.get("revocation_note")))
+
+            if sig_detail.get("failure_reason") and not sig_valid:
+                st.write(f"**Failure Reason:** {sig_detail.get('failure_reason')}")
         
         with st.expander("Log Details"):
             st.code(sig_msg)
