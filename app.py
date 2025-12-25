@@ -132,18 +132,20 @@ with tab_scan:
 
             if prev is not None:
                 st.info("We've seen this file before.")
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4, c5 = st.columns([1.2, 1.0, 1.2, 1.8, 1.8])
                 with c1:
                     st.metric("Last risk score", f"{prev.get('score')}/100" if prev.get("score") is not None else "N/A")
                 with c2:
                     st.metric("Last risk level", str(prev.get("risk_level") or "N/A"))
                 with c3:
                     st.metric("Last scanned", str(prev.get("scanned_at") or "N/A"))
+                with c4:
+                    st.metric("Signer", str(prev.get("signature_signer") or "N/A"))
+                with c5:
+                    st.metric("Issuer", str(prev.get("signature_issuer") or "N/A"))
 
                 st.caption(
                     f"App name: {prev.get('app_name') or 'Unknown'} · "
-                    f"Signer: {prev.get('signature_signer') or 'N/A'} · "
-                    f"Issuer: {prev.get('signature_issuer') or 'N/A'} · "
                     f"Last uploaded as: {prev.get('original_filename') or 'Unknown'}"
                 )
 
