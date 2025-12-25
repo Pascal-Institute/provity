@@ -74,6 +74,41 @@ Then set the connection string (example):
 
 ```bash
 export DATABASE_URL='postgresql://provity:provity@localhost:5432/provity'
+
+#### Recommended: Read-only dashboard access
+
+Provity's **Dashboard** can run in a safer read-only mode. In this mode:
+
+- The UI shows history by running **SELECT** queries only.
+- DB initialization and scan logging are disabled.
+- The app prefers `DATABASE_URL_READONLY` for dashboard queries.
+
+Set (example):
+
+```bash
+export DATABASE_URL_READONLY='postgresql://provity_ro:provity_ro@localhost:5432/provity'
+```
+
+Create the read-only user inside the Docker Postgres (one-time):
+
+```bash
+sudo docker exec -i provity-postgres psql -U provity -d provity <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='provity_ro') THEN
+    CREATE ROLE provity_ro LOGIN PASSWORD 'provity_ro';
+  END IF;
+END $$;
+
+GRANT CONNECT ON DATABASE provity TO provity_ro;
+GRANT USAGE ON SCHEMA public TO provity_ro;
+GRANT SELECT ON TABLE scan_events TO provity_ro;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO provity_ro;
+SQL
+```
+
+Security note: it is recommended to **avoid exposing Postgres (5432) to the public internet**.
 ```
 
 ## Run

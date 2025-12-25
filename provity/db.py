@@ -14,8 +14,12 @@ except Exception:  # pragma: no cover
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
 
 # Default connection for the bundled docker-compose Postgres service.
-# Users can override by setting DATABASE_URL.
+# Users can override by setting DATABASE_URL / DATABASE_URL_READONLY.
 DEFAULT_DATABASE_URL = "postgresql://provity:provity@localhost:5432/provity"
+
+# Separate, optional read-only connection string for dashboards.
+# If set, the app can show history using a DB user with SELECT privileges only.
+DEFAULT_DATABASE_URL_READONLY = "postgresql://provity_ro:provity_ro@localhost:5432/provity"
 
 
 def get_database_url() -> str:
@@ -23,6 +27,45 @@ def get_database_url() -> str:
     # If not provided, default to the local Docker Postgres from docker-compose.yml.
     # This makes the app work out-of-the-box after `docker compose up -d`.
     return url or DEFAULT_DATABASE_URL
+
+
+def get_database_url_readonly() -> str:
+    """Fetch read-only database URL.
+
+    Precedence:
+      1) DATABASE_URL_READONLY
+      2) DATABASE_URL (fallback)
+      3) DEFAULT_DATABASE_URL_READONLY
+      4) DEFAULT_DATABASE_URL
+    """
+    url_ro = os.getenv("DATABASE_URL_READONLY")
+    if url_ro:
+        return url_ro
+    url_rw = os.getenv("DATABASE_URL")
+    if url_rw:
+        return url_rw
+    return DEFAULT_DATABASE_URL_READONLY or DEFAULT_DATABASE_URL
+
+
+def connect(*, readonly: bool = False):
+    """Create a psycopg connection.
+
+    When readonly=True, we attempt to enforce read-only semantics at the
+    transaction level (best-effort). The DB role should still be configured as
+    read-only for real safety.
+    """
+    _require_psycopg()
+    url = get_database_url_readonly() if readonly else get_database_url()
+    conn = psycopg.connect(url)  # type: ignore[attr-defined]
+    if readonly:
+        try:
+            # Enforce transaction read-only if supported.
+            with conn.cursor() as cur:
+                cur.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+        except Exception:
+            # If the server/driver doesn't support it, role permissions should still protect.
+            pass
+    return conn
 
 
 def _require_psycopg() -> None:
@@ -37,7 +80,7 @@ def ensure_schema(schema_path: str | os.PathLike[str] = DEFAULT_SCHEMA_PATH) -> 
     _require_psycopg()
 
     ddl = Path(schema_path).read_text(encoding="utf-8")
-    with psycopg.connect(get_database_url()) as conn:  # type: ignore[attr-defined]
+    with connect(readonly=False) as conn:
         with conn.cursor() as cur:
             cur.execute(ddl)
         conn.commit()
@@ -55,7 +98,7 @@ def insert_scan_event(
     _require_psycopg()
 
     metadata = metadata or {}
-    with psycopg.connect(get_database_url()) as conn:  # type: ignore[attr-defined]
+    with connect(readonly=False) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -70,7 +113,7 @@ def insert_scan_event(
 def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
     _require_psycopg()
 
-    with psycopg.connect(get_database_url()) as conn:  # type: ignore[attr-defined]
+    with connect(readonly=True) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -101,7 +144,7 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
     """Per file hash: last scan time, count, and latest score/level (best-effort)."""
     _require_psycopg()
 
-    with psycopg.connect(get_database_url()) as conn:  # type: ignore[attr-defined]
+    with connect(readonly=True) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

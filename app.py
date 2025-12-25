@@ -43,10 +43,17 @@ st.markdown("""
 # DB + Dashboard controls
 with st.sidebar:
     st.header("Dashboard")
-    db_enabled = st.toggle("Enable scan history (PostgreSQL)", value=False)
+    db_enabled = st.toggle("Enable scan history (PostgreSQL)", value=True)
     st.caption(
-        "Connects to local Docker Postgres by default (postgresql://provity:provity@localhost:5432/provity). "
-        "Set DATABASE_URL to override."
+        "Connects to local Docker Postgres by default. "
+        "For safer dashboard access, set DATABASE_URL_READONLY (recommended) or DATABASE_URL."
+    )
+
+    # Read-only mode: prefer exposing only SELECT-based dashboard operations.
+    db_readonly = st.toggle(
+        "Read-only dashboard mode",
+        value=True,
+        help="When enabled, dashboard uses DATABASE_URL_READONLY (or falls back) and disables init + write logging.",
     )
 
     if db_enabled:
@@ -55,16 +62,19 @@ with st.sidebar:
             st.caption("Install dependencies into your current Python: python3 -m pip install --user -r requirements.txt")
             db_enabled = False
 
-        if st.button("Initialize / migrate DB"):
-            try:
-                assert ensure_schema is not None
-                ensure_schema()
-                st.success("DB schema ready.")
-            except Exception as e:
-                st.error(f"DB init failed: {e}")
+        if db_readonly:
+            st.caption("Read-only mode: DB initialization and scan logging are disabled.")
+        else:
+            if st.button("Initialize / migrate DB"):
+                try:
+                    assert ensure_schema is not None
+                    ensure_schema()
+                    st.success("DB schema ready.")
+                except Exception as e:
+                    st.error(f"DB init failed: {e}")
 
     st.divider()
-    st.caption("Anonymous mode: all scans stored as user_id='anonymous'.")
+    st.caption("Anonymous mode: when logging is enabled, scans are stored as user_id='anonymous'.")
 
 
 tab_scan, tab_dashboard = st.tabs(["Scan", "Dashboard"])
@@ -229,8 +239,8 @@ with tab_scan:
         st.metric("Risk Score", f"{risk_score}/100")
         st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
 
-        # Persist scan event (best-effort)
-        if db_enabled:
+        # Persist scan event (best-effort) - disabled in read-only mode
+        if db_enabled and not db_readonly:
             try:
                 ensure_schema()
                 file_hash = _sha256_file(tmp_path)
@@ -263,7 +273,10 @@ with tab_dashboard:
         st.info("Enable scan history in the sidebar to view the dashboard.")
     else:
         try:
-            ensure_schema()
+            # In read-only mode we don't attempt DDL. If schema is missing, SELECTs will fail
+            # and we'll show a clear error below.
+            if not db_readonly:
+                ensure_schema()
             col_a, col_b = st.columns(2)
             with col_a:
                 recent_limit = st.number_input("Recent scans", min_value=5, max_value=500, value=50, step=5)
