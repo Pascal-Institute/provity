@@ -81,6 +81,14 @@ with st.sidebar:
         help="When enabled, dashboard uses DATABASE_URL_READONLY (or falls back) and disables init + write logging.",
     )
 
+    # Separate toggle: allow logging even when the dashboard itself is read-only.
+    # This keeps the UI safe-by-default while still enabling scan history capture.
+    db_log_scans = st.toggle(
+        "Log scan events to DB",
+        value=True,
+        help="Uses DATABASE_URL (read-write). Disable if you want a view-only dashboard.",
+    )
+
     if db_enabled:
         if _DB_IMPORT_ERROR:
             st.error(f"DB features unavailable: {_DB_IMPORT_ERROR}")
@@ -88,8 +96,9 @@ with st.sidebar:
             db_enabled = False
 
         if db_readonly:
-            st.caption("Read-only mode: DB initialization and scan logging are disabled.")
-        else:
+            st.caption("Read-only mode: DB initialization is disabled. Dashboard uses DATABASE_URL_READONLY.")
+
+        if not db_readonly:
             if st.button("Initialize / migrate DB"):
                 try:
                     assert ensure_schema is not None
@@ -264,8 +273,8 @@ with tab_scan:
         st.metric("Risk Score", f"{risk_score}/100")
         st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
 
-        # Persist scan event (best-effort) - disabled in read-only mode
-        if db_enabled and not db_readonly:
+        # Persist scan event (best-effort)
+        if db_enabled and db_log_scans:
             try:
                 ensure_schema()
                 file_hash = _sha256_file(tmp_path)
