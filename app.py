@@ -1,6 +1,8 @@
 import streamlit as st
 import tempfile
 import os
+import hashlib
+from datetime import datetime
 
 from provity.risk import compute_risk_assessment
 from provity.scanners import (
@@ -9,6 +11,23 @@ from provity.scanners import (
     verify_signature_detailed,
     scan_deb_package,
 )
+try:
+    from provity.db import ensure_schema, insert_scan_event, fetch_recent_scans, fetch_file_last_seen
+    _DB_IMPORT_ERROR = None
+except Exception as e:  # pragma: no cover
+    ensure_schema = None  # type: ignore[assignment]
+    insert_scan_event = None  # type: ignore[assignment]
+    fetch_recent_scans = None  # type: ignore[assignment]
+    fetch_file_last_seen = None  # type: ignore[assignment]
+    _DB_IMPORT_ERROR = str(e)
+
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 # Page Configuration
 st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
@@ -21,94 +40,140 @@ st.markdown("""
 3. **Static Analysis**: `strings` (Suspicious IOC Extraction)
 """)
 
-# File Upload
-uploaded_file = st.file_uploader("Upload file to scan (.exe, .dll, .sys, .msi, .deb)", type=["exe", "dll", "sys", "msi", "deb"])
+# DB + Dashboard controls
+with st.sidebar:
+    st.header("Dashboard")
+    db_enabled = st.toggle("Enable scan history (PostgreSQL)", value=False)
+    st.caption("Uses DATABASE_URL. Data is stored locally in your Postgres volume (pgdata/).")
 
-if uploaded_file is not None:
-    # Save to temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_path = tmp_file.name
+    if db_enabled:
+        if _DB_IMPORT_ERROR:
+            st.error(f"DB features unavailable: {_DB_IMPORT_ERROR}")
+            st.caption("Install dependencies into your current Python: python3 -m pip install --user -r requirements.txt")
+            db_enabled = False
 
-    # If a .deb was uploaded, pre-run the specialized deb scanner so the UI can
-    # display signature, ClamAV and static-analysis results consistently.
-    is_deb = uploaded_file.name.lower().endswith(".deb")
-    deb_scan = None
-    if is_deb:
-        with st.spinner('Analyzing .deb package...'):
+        if st.button("Initialize / migrate DB"):
             try:
-                deb_scan = scan_deb_package(tmp_path)
+                assert ensure_schema is not None
+                ensure_schema()
+                st.success("DB schema ready.")
             except Exception as e:
-                deb_scan = {"sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": str(e)}, "clam_result": (None, "scan error", ""), "artifacts": {}}
-    col1, col2 = st.columns(2)
+                st.error(f"DB init failed: {e}")
 
-    # 1. Signature Verification
-    with col1:
-        st.subheader("1️⃣ Signature Verification")
-        enable_revocation = st.checkbox(
-            "Enable online revocation check (OCSP/CRL)",
-            value=False,
-            help="May require network access. Support depends on the verification backend.",
-        )
-        # If this is a .deb package we use the special handler (pre-computed below),
-        # otherwise fall back to the existing Authenticode verifier.
-        if uploaded_file.name.lower().endswith(".deb"):
-            # deb scan result was computed earlier and placed into variables in the outer scope
-            sig_detail = deb_scan.get("sig_detail", {"backend": "dpkg-sig", "valid": False, "raw_log": "Not checked"})
-            sig_valid = bool(sig_detail.get("valid"))
-            sig_msg = str(sig_detail.get("raw_log") or "")
-            sig_info = {"signer": sig_detail.get("signer") or sig_detail.get("signer_cn") or "Unknown"}
-        else:
-            with st.spinner('Checking Signature...'):
-                sig_detail = verify_signature_detailed(tmp_path, enable_revocation=enable_revocation)
+    st.divider()
+    st.caption("Anonymous mode: all scans stored as user_id='anonymous'.")
+
+
+tab_scan, tab_dashboard = st.tabs(["Scan", "Dashboard"])
+
+
+with tab_scan:
+    # File Upload
+    uploaded_file = st.file_uploader(
+        "Upload file to scan (.exe, .dll, .sys, .msi, .deb)",
+        type=["exe", "dll", "sys", "msi", "deb"],
+    )
+
+    if uploaded_file is None:
+        st.info("Select a file to start scanning.")
+    else:
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+
+        # If a .deb was uploaded, pre-run the specialized deb scanner so the UI can
+        # display signature, ClamAV and static-analysis results consistently.
+        is_deb = uploaded_file.name.lower().endswith(".deb")
+        deb_scan = None
+        if is_deb:
+            with st.spinner("Analyzing .deb package..."):
+                try:
+                    deb_scan = scan_deb_package(tmp_path)
+                except Exception as e:
+                    deb_scan = {
+                        "sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": str(e)},
+                        "clam_result": (None, "scan error", ""),
+                        "artifacts": {},
+                    }
+
+        col1, col2 = st.columns(2)
+
+        # 1. Signature Verification
+        with col1:
+            st.subheader("1️⃣ Signature Verification")
+            enable_revocation = st.checkbox(
+                "Enable online revocation check (OCSP/CRL)",
+                value=False,
+                help="May require network access. Support depends on the verification backend.",
+            )
+            # If this is a .deb package we use the special handler,
+            # otherwise fall back to the existing Authenticode verifier.
+            if is_deb:
+                sig_detail = (deb_scan or {}).get(
+                    "sig_detail",
+                    {"backend": "dpkg-sig", "valid": False, "raw_log": "Not checked"},
+                )
                 sig_valid = bool(sig_detail.get("valid"))
                 sig_msg = str(sig_detail.get("raw_log") or "")
-                sig_info = {"signer": sig_detail.get("signer_cn") or "Unknown"}
+                sig_info = {"signer": sig_detail.get("signer") or sig_detail.get("signer_cn") or "Unknown"}
+            else:
+                with st.spinner("Checking Signature..."):
+                    sig_detail = verify_signature_detailed(tmp_path, enable_revocation=enable_revocation)
+                    sig_valid = bool(sig_detail.get("valid"))
+                    sig_msg = str(sig_detail.get("raw_log") or "")
+                    sig_info = {"signer": sig_detail.get("signer_cn") or "Unknown"}
         
-        if sig_valid:
-            st.success("✅ Valid Signature")
-            st.info(f"**Signer:** {sig_info.get('signer')}")
-        else:
-            st.error("❌ Invalid / Unsigned")
-            st.warning("Digital signature is missing or invalid.")
+            if sig_valid:
+                st.success("✅ Valid Signature")
+                st.info(f"**Signer:** {sig_info.get('signer')}")
+            else:
+                st.error("❌ Invalid / Unsigned")
+                st.warning("Digital signature is missing or invalid.")
 
-        with st.expander("Structured Details"):
-            st.write(f"**Backend:** {sig_detail.get('backend', 'unknown')}")
-            st.write(f"**Subject:** {sig_detail.get('subject') or 'N/A'}")
-            st.write(f"**Issuer:** {sig_detail.get('issuer') or 'N/A'}")
-            st.write(f"**Validity:** {sig_detail.get('not_before') or 'N/A'} → {sig_detail.get('not_after') or 'N/A'}")
-            ts_present = sig_detail.get("timestamp_present")
-            st.write(f"**Timestamp Present:** {'Yes' if ts_present else 'No' if ts_present is not None else 'Unknown'}")
+            with st.expander("Structured Details"):
+                st.write(f"**Backend:** {sig_detail.get('backend', 'unknown')}")
+                st.write(f"**Subject:** {sig_detail.get('subject') or 'N/A'}")
+                st.write(f"**Issuer:** {sig_detail.get('issuer') or 'N/A'}")
+                st.write(
+                    f"**Validity:** {sig_detail.get('not_before') or 'N/A'} → {sig_detail.get('not_after') or 'N/A'}"
+                )
+                ts_present = sig_detail.get("timestamp_present")
+                st.write(
+                    f"**Timestamp Present:** {'Yes' if ts_present else 'No' if ts_present is not None else 'Unknown'}"
+                )
 
-            if enable_revocation:
-                rev_checked = bool(sig_detail.get("revocation_checked"))
-                rev_ok = sig_detail.get("revocation_ok")
-                st.write(f"**Revocation Check:** {'Supported' if rev_checked else 'Not supported/Not performed'}")
-                if rev_ok is True:
-                    st.write("**Revocation Status:** OK")
-                elif rev_ok is False:
-                    st.write("**Revocation Status:** Failed")
-                else:
-                    st.write("**Revocation Status:** Unknown")
-                if sig_detail.get("revocation_note"):
-                    st.caption(str(sig_detail.get("revocation_note")))
+                if enable_revocation:
+                    rev_checked = bool(sig_detail.get("revocation_checked"))
+                    rev_ok = sig_detail.get("revocation_ok")
+                    st.write(
+                        f"**Revocation Check:** {'Supported' if rev_checked else 'Not supported/Not performed'}"
+                    )
+                    if rev_ok is True:
+                        st.write("**Revocation Status:** OK")
+                    elif rev_ok is False:
+                        st.write("**Revocation Status:** Failed")
+                    else:
+                        st.write("**Revocation Status:** Unknown")
+                    if sig_detail.get("revocation_note"):
+                        st.caption(str(sig_detail.get("revocation_note")))
 
-            if sig_detail.get("failure_reason") and not sig_valid:
-                st.write(f"**Failure Reason:** {sig_detail.get('failure_reason')}")
+                if sig_detail.get("failure_reason") and not sig_valid:
+                    st.write(f"**Failure Reason:** {sig_detail.get('failure_reason')}")
+
+            with st.expander("Log Details"):
+                st.code(sig_msg)
+
+        # 2. Virus Scan & Static Analysis
+        with col2:
+            st.subheader("2️⃣ Security Threat Detection (Local)")
         
-        with st.expander("Log Details"):
-            st.code(sig_msg)
-
-    # 2. Virus Scan & Static Analysis
-    with col2:
-        st.subheader("2️⃣ Security Threat Detection (Local)")
-        
-        # ClamAV Scan
-        if is_deb and deb_scan is not None:
-            is_clean, virus_name, scan_log = deb_scan.get("clam_result", (None, "ClamAV not run", ""))
-        else:
-            with st.spinner('Scanning Malware (ClamAV)...'):
-                is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path)
+            # ClamAV Scan
+            if is_deb and deb_scan is not None:
+                is_clean, virus_name, scan_log = deb_scan.get("clam_result", (None, "ClamAV not run", ""))
+            else:
+                with st.spinner("Scanning Malware (ClamAV)..."):
+                    is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path)
 
         if is_clean is True:
             st.success("✅ Clean (No Malware Detected)")
@@ -120,15 +185,15 @@ if uploaded_file is not None:
             st.warning("⚠️ Scanner Error")
             st.write(scan_log)
 
-        st.markdown("---")
+            st.markdown("---")
         
-        # Static Analysis
-        st.subheader("3️⃣ Static Analysis (IoC Extraction)")
-        with st.spinner('Extracting Strings...'):
-            if is_deb and deb_scan is not None:
-                artifacts = deb_scan.get("artifacts", {})
-            else:
-                artifacts = static_analysis(tmp_path)
+            # Static Analysis
+            st.subheader("3️⃣ Static Analysis (IoC Extraction)")
+            with st.spinner("Extracting Strings..."):
+                if is_deb and deb_scan is not None:
+                    artifacts = deb_scan.get("artifacts", {})
+                else:
+                    artifacts = static_analysis(tmp_path)
         
         has_artifacts = any(v for v in artifacts.values())
         
@@ -141,25 +206,80 @@ if uploaded_file is not None:
         else:
             st.info("No suspicious strings or URLs found.")
 
-    st.markdown("---")
-    st.subheader("Risk Summary")
-    risk_score, risk_level, risk_evidence = compute_risk_assessment(
-        sig_valid=sig_valid,
-        sig_info=sig_info,
-        clam_clean_state=is_clean,
-        clam_label=virus_name,
-        artifacts=artifacts,
-    )
+        st.markdown("---")
+        st.subheader("Risk Summary")
+        risk_score, risk_level, risk_evidence = compute_risk_assessment(
+            sig_valid=sig_valid,
+            sig_info=sig_info,
+            clam_clean_state=is_clean,
+            clam_label=virus_name,
+            artifacts=artifacts,
+        )
 
-    if risk_level == "Low":
-        st.success(f"Overall Risk: {risk_level}")
-    elif risk_level == "Medium":
-        st.warning(f"Overall Risk: {risk_level}")
+        if risk_level == "Low":
+            st.success(f"Overall Risk: {risk_level}")
+        elif risk_level == "Medium":
+            st.warning(f"Overall Risk: {risk_level}")
+        else:
+            st.error(f"Overall Risk: {risk_level}")
+
+        st.metric("Risk Score", f"{risk_score}/100")
+        st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
+
+        # Persist scan event (best-effort)
+        if db_enabled:
+            try:
+                ensure_schema()
+                file_hash = _sha256_file(tmp_path)
+                insert_scan_event(
+                    user_id="anonymous",
+                    original_filename=uploaded_file.name,
+                    file_sha256=file_hash,
+                    score=risk_score,
+                    risk_level=risk_level,
+                    metadata={
+                        "is_deb": bool(is_deb),
+                        "signature_backend": sig_detail.get("backend"),
+                        "signature_valid": bool(sig_valid),
+                        "clam_state": is_clean,
+                        "clam_label": virus_name,
+                    },
+                )
+                st.sidebar.success("Logged to DB")
+            except Exception as e:
+                st.sidebar.warning(f"DB logging failed: {e}")
+
+        # Cleanup
+        os.remove(tmp_path)
+
+
+with tab_dashboard:
+    st.subheader("Recent scan activity")
+
+    if not db_enabled:
+        st.info("Enable scan history in the sidebar to view the dashboard.")
     else:
-        st.error(f"Overall Risk: {risk_level}")
+        try:
+            ensure_schema()
+            col_a, col_b = st.columns(2)
+            with col_a:
+                recent_limit = st.number_input("Recent scans", min_value=5, max_value=500, value=50, step=5)
+            with col_b:
+                file_limit = st.number_input("File summary rows", min_value=5, max_value=500, value=50, step=5)
 
-    st.metric("Risk Score", f"{risk_score}/100")
-    st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
+            recent = fetch_recent_scans(limit=int(recent_limit))
+            file_summary = fetch_file_last_seen(limit_files=int(file_limit))
 
-    # Cleanup
-    os.remove(tmp_path)
+            # Top metrics
+            if recent:
+                last_scan_time = recent[0]["scanned_at"]
+                st.caption(f"Last scan: {last_scan_time}")
+
+            st.markdown("### Files scanned recently")
+            st.dataframe(file_summary, use_container_width=True)
+
+            st.markdown("### Recent scans")
+            st.dataframe(recent, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Dashboard unavailable: {e}")

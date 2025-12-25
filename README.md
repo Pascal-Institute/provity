@@ -10,6 +10,7 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
 - Static strings extraction (strings) with simple heuristics for IPs, URLs, shell usage, and registry keys.
 - Risk Summary: overall risk level (Low/Medium/High), score (0–100), and evidence list.
 - Temporary files are cleaned after each scan.
+- Optional scan history dashboard backed by PostgreSQL (anonymous logging).
 
 ## Requirements
 
@@ -18,26 +19,75 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
   - `osslsigncode`
   - `clamscan` (ClamAV)
   - `strings` (from binutils or equivalent)
+- Optional (for .deb signature checks): `dpkg-deb` and `dpkg-sig`.
 - CA certificates bundle readable at `/etc/ssl/certs/ca-certificates.crt` for signature validation (adjust the path in `verify_signature` if your system differs).
+
+### Optional: PostgreSQL (scan history)
+
+Provity can store scan results (risk score/level and basic metadata) in PostgreSQL and show them in a dashboard inside the Streamlit UI.
+
+- Storage is anonymous by default: all scan events are stored with `user_id='anonymous'`.
+- Database files are kept locally under `./pgdata` when using Docker (and ignored by git).
 
 ## Setup
 
-1. Create and activate a virtual environment.
-2. Install Python dependencies:
-   ```bash
-   pip install streamlit
-   ```
-3. Ensure osslsigncode, ClamAV, and strings are installed and callable from the shell.
+### Option A (recommended): install into a system-wide Python environment
+
+If you prefer not to use a virtual environment, install the Python dependencies into your system Python.
+
+On Debian/Ubuntu this typically means:
+
+```bash
+python3 -m pip install --user -r requirements.txt
+```
+
+Then you can run Streamlit via:
+
+```bash
+python3 -m streamlit run app.py
+```
+
+### Option B: use a virtual environment (optional)
+
+If you *do* want isolation:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
+
+### System tools
+
+Ensure osslsigncode, ClamAV, and strings are installed and callable from the shell.
+
+### Start PostgreSQL with Docker (recommended)
+
+From the project root:
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+Then set the connection string (example):
+
+```bash
+export DATABASE_URL='postgresql://provity:provity@localhost:5432/provity'
+```
 
 ## Run
 
-From the project root, launch Streamlit:
+From the project root, launch Streamlit (system Python):
 
 ```bash
-streamlit run app.py
+python3 -m streamlit run app.py
 ```
 
-The app starts a local web UI. Upload a Windows PE file (`.exe`, `.dll`, `.sys`, `.msi`) to initiate analysis.
+The app starts a local web UI.
+
+- Upload a file (`.exe`, `.dll`, `.sys`, `.msi`, `.deb`) to initiate analysis.
+- If you enable **Enable scan history (PostgreSQL)** in the sidebar (and have `DATABASE_URL` set), the app will log scan events and show the **Dashboard** tab.
 
 ## How It Works
 
@@ -48,12 +98,30 @@ The app starts a local web UI. Upload a Windows PE file (`.exe`, `.dll`, `.sys`,
 5. Risk summary: computes a score and level (Low/Medium/High) with evidence based on the three checks.
 6. Temporary file is deleted after processing.
 
+### Dashboard (scan history)
+
+When enabled, Provity stores each scan as a row in the `scan_events` table:
+
+- `original_filename`
+- `file_sha256` (SHA-256 hash of the uploaded file)
+- `score`, `risk_level`
+- `scanned_at`
+- small `metadata` JSON (scanner backend, whether .deb, etc.)
+
+The Dashboard tab shows:
+
+- A per-file summary (last seen time, scan count, last risk level)
+- A recent scans table (most recent first)
+
 ## Project Structure
 
 - Streamlit entrypoint: `app.py`
 - Scanners and utilities: `provity/`
   - `provity/scanners.py`: signature verification, ClamAV scan, and IoC extraction
   - `provity/risk.py`: risk scoring and evidence generation
+- Database helper: `provity/db.py`
+- SQL schema: `sql/schema.sql`
+- Docker Postgres (optional): `docker-compose.yml` (data in `pgdata/`)
 
 ## Notes and Limitations
 

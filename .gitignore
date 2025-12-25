@@ -9,3 +9,9 @@ venv/
 build/
 dist/
 .pytest_cache/
+
+# Local Postgres data directory (docker bind mount)
+pgdata/
+
+# Local env file
+.env
