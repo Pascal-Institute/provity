@@ -4,6 +4,9 @@ import os
 import re
 import subprocess
 import shutil
+import tempfile
+import tarfile
+from pathlib import Path
 from typing import Any
 
 DEFAULT_CA_PATH = "/etc/ssl/certs/ca-certificates.crt"
@@ -289,3 +292,146 @@ def static_analysis(file_path: str) -> dict[str, list[str]]:
         return {}
     except Exception:
         return {}
+
+
+def scan_deb_package(file_path: str) -> dict[str, Any]:
+    """Specialized handling for Debian packages (.deb).
+
+    Returns a dict with keys:
+      - sig_detail: dict with signature verification details (backend, valid, raw_log, ...)
+      - clam_result: tuple (is_clean | None, label, raw_log)
+      - artifacts: dict of static analysis findings
+
+    This function prefers `dpkg-deb`/`dpkg-sig` when available and falls back to
+    extracting the ar archive if needed.
+    """
+    result: dict[str, Any] = {
+        "sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": "Not checked"},
+        "clam_result": (None, "ClamAV not run", ""),
+        "artifacts": {},
+    }
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="provity_deb_"))
+    extract_dir = tmpdir / "extract"
+    control_dir = tmpdir / "control"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    control_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Signature: try dpkg-sig if present
+    try:
+        if shutil.which("dpkg-sig"):
+            cmd = ["dpkg-sig", "--verify", file_path]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            out = (proc.stdout or "") + (proc.stderr or "")
+            valid = proc.returncode == 0
+            result["sig_detail"] = {"backend": "dpkg-sig", "valid": valid, "raw_log": out}
+        else:
+            result["sig_detail"] = {"backend": "dpkg-sig", "valid": False, "raw_log": "dpkg-sig not installed"}
+    except subprocess.TimeoutExpired:
+        result["sig_detail"] = {"backend": "dpkg-sig", "valid": False, "raw_log": "dpkg-sig timed out"}
+    except Exception as e:
+        result["sig_detail"] = {"backend": "dpkg-sig", "valid": False, "raw_log": str(e)}
+
+    # 2) Extract package contents (prefer dpkg-deb)
+    extracted_ok = False
+    try:
+        if shutil.which("dpkg-deb"):
+            # -x extracts data, -e extracts control (DEBIAN)
+            subprocess.run(["dpkg-deb", "-x", file_path, str(extract_dir)], check=True, capture_output=True, text=True, timeout=60)
+            subprocess.run(["dpkg-deb", "-e", file_path, str(control_dir)], check=True, capture_output=True, text=True, timeout=30)
+            extracted_ok = True
+        else:
+            # Fallback: use 'ar' to extract members, then untar data.tar.*
+            if shutil.which("ar"):
+                # run in temp dir
+                subprocess.run(["ar", "x", file_path], cwd=str(tmpdir), check=True, capture_output=True, text=True, timeout=30)
+                # find data.tar.*
+                for member in tmpdir.iterdir():
+                    if member.name.startswith("data.tar"):
+                        # extract
+                        try:
+                            with tarfile.open(member, "r:*") as t:
+                                t.extractall(path=str(extract_dir))
+                            extracted_ok = True
+                        except Exception:
+                            continue
+    except subprocess.CalledProcessError:
+        extracted_ok = False
+    except subprocess.TimeoutExpired:
+        extracted_ok = False
+
+    # 3) ClamAV: scan the .deb file and (if extracted) the extracted tree recursively
+    try:
+        # First scan the .deb file itself
+        clam_deb = scan_virus_clamav(file_path)
+        # Then, if extracted, run recursive clamscan on extract_dir
+        if extracted_ok and shutil.which("clamscan"):
+            cmd = ["clamscan", "-r", "--no-summary", str(extract_dir)]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if proc.returncode == 0:
+                # clean
+                clam_tree = (True, "Clean", proc.stdout)
+            elif proc.returncode == 1:
+                # infected
+                label = "Unknown Malware"
+                stdout = proc.stdout or ""
+                if "FOUND" in stdout:
+                    # best-effort parse
+                    parts = stdout.split("FOUND")
+                    if len(parts) > 0:
+                        raw_name = parts[0].split(":")[-1].strip()
+                        label = raw_name
+                clam_tree = (False, label, proc.stdout)
+            else:
+                clam_tree = (None, "Engine Error", proc.stderr)
+
+            # Prefer tree result if it found malware, else fallback to single-file result
+            if clam_tree[0] is False:
+                result["clam_result"] = clam_tree
+            else:
+                result["clam_result"] = clam_deb
+        else:
+            result["clam_result"] = clam_deb
+    except subprocess.TimeoutExpired:
+        result["clam_result"] = (None, "Scan Timeout", "ClamAV scan timed out")
+    except Exception:
+        result["clam_result"] = (None, "Scan Error", "")
+
+    # 4) Static analysis: run on the .deb file and on extracted executables
+    artifacts: dict[str, list[str]] = {}
+    try:
+        # Start with the archive itself
+        base_art = static_analysis(file_path) or {}
+        for k, v in base_art.items():
+            artifacts.setdefault(k, [])
+            for it in v:
+                if it not in artifacts[k]:
+                    artifacts[k].append(it)
+
+        if extracted_ok:
+            for root, dirs, files in os.walk(str(extract_dir)):
+                for name in files:
+                    p = Path(root) / name
+                    # perform static analysis on likely binaries or scripts
+                    try:
+                        if os.access(p, os.X_OK) or p.suffix in {".sh", ".py", ".pl", ""}:
+                            a = static_analysis(str(p)) or {}
+                            for k, v in a.items():
+                                artifacts.setdefault(k, [])
+                                for it in v:
+                                    if it not in artifacts[k] and len(artifacts[k]) < 5:
+                                        artifacts[k].append(it)
+                    except Exception:
+                        continue
+
+        result["artifacts"] = artifacts
+    except Exception:
+        result["artifacts"] = {}
+
+    # Cleanup
+    try:
+        shutil.rmtree(str(tmpdir))
+    except Exception:
+        pass
+
+    return result

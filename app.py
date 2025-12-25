@@ -3,7 +3,12 @@ import tempfile
 import os
 
 from provity.risk import compute_risk_assessment
-from provity.scanners import scan_virus_clamav, static_analysis, verify_signature_detailed
+from provity.scanners import (
+    scan_virus_clamav,
+    static_analysis,
+    verify_signature_detailed,
+    scan_deb_package,
+)
 
 # Page Configuration
 st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
@@ -17,7 +22,7 @@ st.markdown("""
 """)
 
 # File Upload
-uploaded_file = st.file_uploader("Upload file to scan (.exe, .dll, .sys, .msi)", type=["exe", "dll", "sys", "msi"])
+uploaded_file = st.file_uploader("Upload file to scan (.exe, .dll, .sys, .msi, .deb)", type=["exe", "dll", "sys", "msi", "deb"])
 
 if uploaded_file is not None:
     # Save to temp file
@@ -25,6 +30,16 @@ if uploaded_file is not None:
         tmp_file.write(uploaded_file.getvalue())
         tmp_path = tmp_file.name
 
+    # If a .deb was uploaded, pre-run the specialized deb scanner so the UI can
+    # display signature, ClamAV and static-analysis results consistently.
+    is_deb = uploaded_file.name.lower().endswith(".deb")
+    deb_scan = None
+    if is_deb:
+        with st.spinner('Analyzing .deb package...'):
+            try:
+                deb_scan = scan_deb_package(tmp_path)
+            except Exception as e:
+                deb_scan = {"sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": str(e)}, "clam_result": (None, "scan error", ""), "artifacts": {}}
     col1, col2 = st.columns(2)
 
     # 1. Signature Verification
@@ -35,11 +50,20 @@ if uploaded_file is not None:
             value=False,
             help="May require network access. Support depends on the verification backend.",
         )
-        with st.spinner('Checking Signature...'):
-            sig_detail = verify_signature_detailed(tmp_path, enable_revocation=enable_revocation)
+        # If this is a .deb package we use the special handler (pre-computed below),
+        # otherwise fall back to the existing Authenticode verifier.
+        if uploaded_file.name.lower().endswith(".deb"):
+            # deb scan result was computed earlier and placed into variables in the outer scope
+            sig_detail = deb_scan.get("sig_detail", {"backend": "dpkg-sig", "valid": False, "raw_log": "Not checked"})
             sig_valid = bool(sig_detail.get("valid"))
             sig_msg = str(sig_detail.get("raw_log") or "")
-            sig_info = {"signer": sig_detail.get("signer_cn") or "Unknown"}
+            sig_info = {"signer": sig_detail.get("signer") or sig_detail.get("signer_cn") or "Unknown"}
+        else:
+            with st.spinner('Checking Signature...'):
+                sig_detail = verify_signature_detailed(tmp_path, enable_revocation=enable_revocation)
+                sig_valid = bool(sig_detail.get("valid"))
+                sig_msg = str(sig_detail.get("raw_log") or "")
+                sig_info = {"signer": sig_detail.get("signer_cn") or "Unknown"}
         
         if sig_valid:
             st.success("✅ Valid Signature")
@@ -80,9 +104,12 @@ if uploaded_file is not None:
         st.subheader("2️⃣ Security Threat Detection (Local)")
         
         # ClamAV Scan
-        with st.spinner('Scanning Malware (ClamAV)...'):
-            is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path)
-        
+        if is_deb and deb_scan is not None:
+            is_clean, virus_name, scan_log = deb_scan.get("clam_result", (None, "ClamAV not run", ""))
+        else:
+            with st.spinner('Scanning Malware (ClamAV)...'):
+                is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path)
+
         if is_clean is True:
             st.success("✅ Clean (No Malware Detected)")
             st.caption("Safe according to ClamAV engine scan results.")
@@ -98,7 +125,10 @@ if uploaded_file is not None:
         # Static Analysis
         st.subheader("3️⃣ Static Analysis (IoC Extraction)")
         with st.spinner('Extracting Strings...'):
-            artifacts = static_analysis(tmp_path)
+            if is_deb and deb_scan is not None:
+                artifacts = deb_scan.get("artifacts", {})
+            else:
+                artifacts = static_analysis(tmp_path)
         
         has_artifacts = any(v for v in artifacts.values())
         
