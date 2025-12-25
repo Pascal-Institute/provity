@@ -44,7 +44,10 @@ st.markdown("""
 with st.sidebar:
     st.header("Dashboard")
     db_enabled = st.toggle("Enable scan history (PostgreSQL)", value=False)
-    st.caption("Uses DATABASE_URL. Data is stored locally in your Postgres volume (pgdata/).")
+    st.caption(
+        "Connects to local Docker Postgres by default (postgresql://provity:provity@localhost:5432/provity). "
+        "Set DATABASE_URL to override."
+    )
 
     if db_enabled:
         if _DB_IMPORT_ERROR:

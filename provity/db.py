@@ -13,14 +13,16 @@ except Exception:  # pragma: no cover
 
 DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "sql" / "schema.sql"
 
+# Default connection for the bundled docker-compose Postgres service.
+# Users can override by setting DATABASE_URL.
+DEFAULT_DATABASE_URL = "postgresql://provity:provity@localhost:5432/provity"
+
 
 def get_database_url() -> str:
     url = os.getenv("DATABASE_URL")
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. Example: postgresql://provity:provity@localhost:5432/provity"
-        )
-    return url
+    # If not provided, default to the local Docker Postgres from docker-compose.yml.
+    # This makes the app work out-of-the-box after `docker compose up -d`.
+    return url or DEFAULT_DATABASE_URL
 
 
 def _require_psycopg() -> None:
