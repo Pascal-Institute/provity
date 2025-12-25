@@ -207,6 +207,23 @@ def _encode_icon_for_db(icon_bytes: bytes | None, icon_mime: str | None) -> tupl
         return None, None
 
 
+def _debug_icon_pipeline(*, label: str, raw_bytes: bytes | None, raw_mime: str | None, b64: str | None, b64_mime: str | None) -> None:
+    """Emit small, non-sensitive diagnostics for icon extraction.
+
+    Enabled only when PROVITY_DEBUG_ICON=1.
+    """
+    if os.getenv("PROVITY_DEBUG_ICON") != "1":
+        return
+    try:
+        raw_len = len(raw_bytes) if raw_bytes else 0
+        b64_len = len(b64) if b64 else 0
+        st.sidebar.caption(
+            f"[icon] {label}: raw_len={raw_len} raw_mime={raw_mime or 'n/a'} → b64_len={b64_len} b64_mime={b64_mime or 'n/a'}"
+        )
+    except Exception:
+        pass
+
+
 def _decode_icon_from_db(*, icon_b64: str | None, icon_b64_mime: str | None) -> tuple[bytes | None, str | None]:
     """Decode icon from base64 DB fields (base64-only)."""
     if not icon_b64:
@@ -289,6 +306,14 @@ with tab_scan:
 
         # Prefer storing icons as base64 PNG for reliability.
         icon_b64, icon_b64_mime = _encode_icon_for_db(icon_bytes, icon_mime)
+
+        _debug_icon_pipeline(
+            label=f"upload:{uploaded_file.name}",
+            raw_bytes=icon_bytes,
+            raw_mime=icon_mime,
+            b64=icon_b64,
+            b64_mime=icon_b64_mime,
+        )
 
         # Duplicate check (best-effort): if we've seen this hash before, show last scan time + score.
         if db_enabled and fetch_latest_scan_for_hash is not None:
