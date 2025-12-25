@@ -186,3 +186,36 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+def fetch_latest_scan_for_hash(file_sha256: str) -> dict[str, Any] | None:
+    """Fetch latest scan info for a given file hash (read-only).
+
+    Returns None when no prior scans exist.
+    """
+    _require_psycopg()
+
+    with connect(readonly=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT scanned_at, score, risk_level, original_filename, COALESCE(metadata->>'app_name','') AS app_name
+                FROM scan_events
+                WHERE file_sha256 = %s
+                ORDER BY scanned_at DESC
+                LIMIT 1
+                """,
+                (file_sha256,),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    return {
+        "scanned_at": row[0],
+        "score": row[1],
+        "risk_level": row[2],
+        "original_filename": row[3],
+        "app_name": row[4] or "Unknown",
+    }

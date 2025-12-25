@@ -13,13 +13,14 @@ from provity.scanners import (
     scan_deb_package,
 )
 try:
-    from provity.db import ensure_schema, insert_scan_event, fetch_recent_scans, fetch_file_last_seen
+    from provity.db import ensure_schema, insert_scan_event, fetch_recent_scans, fetch_file_last_seen, fetch_latest_scan_for_hash
     _DB_IMPORT_ERROR = None
 except Exception as e:  # pragma: no cover
     ensure_schema = None  # type: ignore[assignment]
     insert_scan_event = None  # type: ignore[assignment]
     fetch_recent_scans = None  # type: ignore[assignment]
     fetch_file_last_seen = None  # type: ignore[assignment]
+    fetch_latest_scan_for_hash = None  # type: ignore[assignment]
     _DB_IMPORT_ERROR = str(e)
 
 
@@ -74,12 +75,10 @@ with st.sidebar:
         "For safer dashboard access, set DATABASE_URL_READONLY (recommended) or DATABASE_URL."
     )
 
-    # Read-only mode: prefer exposing only SELECT-based dashboard operations.
-    db_readonly = st.toggle(
-        "Read-only dashboard mode",
-        value=True,
-        help="When enabled, dashboard uses DATABASE_URL_READONLY (or falls back) and disables init + write logging.",
-    )
+    # Read-only mode is enforced by design.
+    # Dashboard queries always use DATABASE_URL_READONLY (or fallback) and we never expose schema init in the UI.
+    db_readonly = True
+    st.caption("Read-only dashboard mode: enforced")
 
     # Separate toggle: allow logging even when the dashboard itself is read-only.
     # This keeps the UI safe-by-default while still enabling scan history capture.
@@ -95,17 +94,8 @@ with st.sidebar:
             st.caption("Install dependencies into your current Python: python3 -m pip install --user -r requirements.txt")
             db_enabled = False
 
-        if db_readonly:
-            st.caption("Read-only mode: DB initialization is disabled. Dashboard uses DATABASE_URL_READONLY.")
-
-        if not db_readonly:
-            if st.button("Initialize / migrate DB"):
-                try:
-                    assert ensure_schema is not None
-                    ensure_schema()
-                    st.success("DB schema ready.")
-                except Exception as e:
-                    st.error(f"DB init failed: {e}")
+        # We intentionally do not expose schema init/migrations from the UI.
+        # Provision schema out-of-band (see README).
 
     st.divider()
     st.caption("Anonymous mode: when logging is enabled, scans are stored as user_id='anonymous'.")
@@ -128,6 +118,31 @@ with tab_scan:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
+
+        # Compute hash early for duplicate checks and logging.
+        file_hash = _sha256_file(tmp_path)
+
+        # Duplicate check (best-effort): if we've seen this hash before, show last scan time + score.
+        if db_enabled and fetch_latest_scan_for_hash is not None:
+            try:
+                prev = fetch_latest_scan_for_hash(file_hash)
+            except Exception:
+                prev = None
+
+            if prev is not None:
+                st.info("We've seen this file before.")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Last risk score", f"{prev.get('score')}/100" if prev.get("score") is not None else "N/A")
+                with c2:
+                    st.metric("Last risk level", str(prev.get("risk_level") or "N/A"))
+                with c3:
+                    st.metric("Last scanned", str(prev.get("scanned_at") or "N/A"))
+
+                st.caption(
+                    f"App name: {prev.get('app_name') or 'Unknown'} · "
+                    f"Last uploaded as: {prev.get('original_filename') or 'Unknown'}"
+                )
 
         # If a .deb was uploaded, pre-run the specialized deb scanner so the UI can
         # display signature, ClamAV and static-analysis results consistently.
@@ -276,8 +291,9 @@ with tab_scan:
         # Persist scan event (best-effort)
         if db_enabled and db_log_scans:
             try:
+                # Schema must already exist (provision out-of-band). We keep this call
+                # to avoid silent failures if the schema has not been created yet.
                 ensure_schema()
-                file_hash = _sha256_file(tmp_path)
                 insert_scan_event(
                     user_id="anonymous",
                     original_filename=uploaded_file.name,
