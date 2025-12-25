@@ -1,6 +1,6 @@
 # Provity: Trustured Software Validator
 
-Provity is a Streamlit-based interface for locally assessing Windows executables without relying on external network calls. It orchestrates three on-box checks: signature verification (osslsigncode), malware scanning (ClamAV), and a lightweight static strings pass for common IoCs.
+Provity is a Streamlit-based interface for locally assessing Windows executables without relying on external network calls. It orchestrates three on-box checks—signature verification (osslsigncode), malware scanning (ClamAV), and a lightweight static strings pass for common IoCs—and then summarizes the results into an overall risk level.
 
 ## Features
 
@@ -8,6 +8,7 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
 - Signature verification via osslsigncode with CA bundle validation.
 - Malware scan using the ClamAV CLI (clamscan) and concise result messaging.
 - Static strings extraction (strings) with simple heuristics for IPs, URLs, shell usage, and registry keys.
+- Risk Summary: overall risk level (Low/Medium/High), score (0–100), and evidence list.
 - Temporary files are cleaned after each scan.
 
 ## Requirements
@@ -44,7 +45,15 @@ The app starts a local web UI. Upload a Windows PE file (`.exe`, `.dll`, `.sys`,
 2. Signature check: `osslsigncode verify -CAfile /etc/ssl/certs/ca-certificates.crt -in <file>`; reports validity and signer CN if present.
 3. Malware scan: `clamscan --no-summary <file>`; returns clean, infected with name, or engine error.
 4. Static analysis: `strings -n 6 <file>`; scans extracted text for IPs, URLs, common shell commands, and registry references, keeping up to five hits per category.
-5. Temporary file is deleted after processing.
+5. Risk summary: computes a score and level (Low/Medium/High) with evidence based on the three checks.
+6. Temporary file is deleted after processing.
+
+## Project Structure
+
+- Streamlit entrypoint: `app.py`
+- Scanners and utilities: `provity/`
+  - `provity/scanners.py`: signature verification, ClamAV scan, and IoC extraction
+  - `provity/risk.py`: risk scoring and evidence generation
 
 ## Notes and Limitations
 
@@ -55,4 +64,6 @@ The app starts a local web UI. Upload a Windows PE file (`.exe`, `.dll`, `.sys`,
 
 ## File Reference
 
-- Main app: [app.py](app.py)
+- Streamlit app: [app.py](app.py)
+- Scanners: [provity/scanners.py](provity/scanners.py)
+- Risk scoring: [provity/risk.py](provity/risk.py)

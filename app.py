@@ -1,8 +1,9 @@
 import streamlit as st
-import subprocess
 import tempfile
 import os
-import re
+
+from provity.risk import compute_risk_assessment
+from provity.scanners import scan_virus_clamav, static_analysis, verify_signature
 
 # Page Configuration
 st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
@@ -17,146 +18,6 @@ st.markdown("""
 
 # File Upload
 uploaded_file = st.file_uploader("Upload file to scan (.exe, .dll, .sys, .msi)", type=["exe", "dll", "sys", "msi"])
-
-def compute_risk_assessment(sig_valid, sig_info, clam_clean_state, clam_label, artifacts):
-    """Compute a simple risk score/level and evidence list from scan outputs."""
-    score = 0
-    evidence = []
-
-    # Signature
-    if sig_valid:
-        signer = (sig_info or {}).get("signer") or "Unknown"
-        evidence.append(f"Signature: valid (Signer: {signer})")
-        if signer.strip().lower() == "unknown":
-            score += 5
-    else:
-        score += 25
-        evidence.append("Signature: missing or invalid")
-
-    # ClamAV
-    if clam_clean_state is True:
-        evidence.append("ClamAV: clean")
-    elif clam_clean_state is False:
-        score += 80
-        evidence.append(f"ClamAV: malware detected ({clam_label})")
-    else:
-        score += 25
-        evidence.append(f"ClamAV: scanner error ({clam_label})")
-
-    # Static IoCs
-    artifact_weights = {
-        "Suspicious Cmd": 20,
-        "URL": 15,
-        "IP Address": 10,
-        "Registry Key": 10,
-    }
-
-    artifacts = artifacts or {}
-    any_artifacts = False
-    for category, items in artifacts.items():
-        if not items:
-            continue
-        any_artifacts = True
-        score += artifact_weights.get(category, 5)
-        evidence.append(f"Static IoC: {category} found ({len(items)})")
-
-    if not any_artifacts:
-        evidence.append("Static IoC: none found")
-
-    score = max(0, min(100, score))
-    if score >= 70:
-        level = "High"
-    elif score >= 30:
-        level = "Medium"
-    else:
-        level = "Low"
-
-    return score, level, evidence
-
-def verify_signature(file_path):
-    """Signature verification using osslsigncode"""
-    ca_path = "/etc/ssl/certs/ca-certificates.crt"
-    if not os.path.exists(ca_path):
-        return False, "CA certificate not found.", {}
-
-    try:
-        cmd = ["osslsigncode", "verify", "-CAfile", ca_path, "-in", file_path]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        output = result.stdout + result.stderr
-        
-        info = {"signer": "Unknown"}
-        is_valid = "Signature verification: ok" in output
-
-        subject_match = re.search(r"Subject:.*?CN=([^,\n]+)", output)
-        if subject_match:
-            info["signer"] = subject_match.group(1).strip()
-        
-        return is_valid, output, info
-    except FileNotFoundError:
-        return False, "osslsigncode is not installed.", {}
-
-def scan_virus_clamav(file_path):
-    """Local virus scan using ClamAV (clamscan)"""
-    try:
-        # --no-summary: Output results only, excluding summary
-        # -i: Output only infected files (No output if clean)
-        cmd = ["clamscan", "--no-summary", file_path]
-        
-        # clamscan return codes:
-        # 0: No virus found
-        # 1: Virus found
-        # 2: Error
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode == 0:
-            return True, "Clean", result.stdout
-        elif result.returncode == 1:
-            # Output example: /tmp/tmpxxx: Win.Trojan.Agent-1234 FOUND
-            virus_name = "Unknown Malware"
-            if "FOUND" in result.stdout:
-                parts = result.stdout.split("FOUND")
-                if len(parts) > 0:
-                    # Attempt to extract only virus name by removing file path
-                    raw_name = parts[0].split(":")[-1].strip()
-                    virus_name = raw_name
-            return False, virus_name, result.stdout
-        else:
-            return None, "Engine Error", result.stderr
-
-    except FileNotFoundError:
-        return None, "ClamAV (clamscan) is not installed.", ""
-
-def static_analysis(file_path):
-    """Static analysis using Linux strings command (IOC Extraction)"""
-    suspicious_patterns = {
-        "IP Address": r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b",
-        "URL": r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
-        "Suspicious Cmd": r"(cmd\.exe|powershell|wget|curl|/bin/sh)",
-        "Registry Key": r"HKLM\\|HKCU\\|Software\\Microsoft\\Windows"
-    }
-    
-    found_artifacts = {k: [] for k in suspicious_patterns.keys()}
-    
-    try:
-        # -n 6: Extract strings with at least 6 characters (Noise reduction)
-        cmd = ["strings", "-n", "6", file_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, errors='ignore')
-        
-        lines = result.stdout.splitlines()
-        
-        # Simple pattern matching (Limited check to avoid performance issues on large files)
-        for line in lines:
-            if len(line) > 200: continue # Skip overly long lines
-            
-            for category, pattern in suspicious_patterns.items():
-                if re.search(pattern, line, re.IGNORECASE):
-                    # Add after deduplication (Save max 5 items)
-                    if line.strip() not in found_artifacts[category] and len(found_artifacts[category]) < 5:
-                        found_artifacts[category].append(line.strip())
-                        
-        return found_artifacts
-    except Exception:
-        return {}
 
 if uploaded_file is not None:
     # Save to temp file
