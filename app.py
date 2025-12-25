@@ -5,6 +5,8 @@ import hashlib
 from datetime import datetime
 import re
 from io import BytesIO
+from pathlib import Path
+import base64
 
 from provity.risk import compute_risk_assessment
 from provity.scanners import (
@@ -62,6 +64,9 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
 
     Currently supported:
       - .ico uploads: stored as-is.
+
+    Best-effort support:
+      - Windows binaries (.exe/.dll/.sys) and some installers: try extract the first icon.
     """
     try:
         name = getattr(uploaded_file, "name", "") or ""
@@ -69,9 +74,147 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
             raw = uploaded_file.getvalue()
             if raw:
                 return raw, "image/x-icon"
+
+        # Try to extract icon from PE/installer formats.
+        if name.lower().endswith((".exe", ".dll", ".sys", ".msi")):
+            try:
+                # icoextract works on PE files; for MSI this may fail (we just fall back).
+                # API note (icoextract>=0.2): list_group_icons() + export_icon().
+                from icoextract import IconExtractor  # type: ignore
+
+                data = uploaded_file.getvalue()
+                if not data:
+                    return None, None
+
+                # IconExtractor expects a file path.
+                with tempfile.NamedTemporaryFile(delete=False, suffix=Path(name).suffix) as f:
+                    f.write(data)
+                    tmp = f.name
+
+                try:
+                    extractor = IconExtractor(tmp)
+                    group_icons = extractor.list_group_icons()
+                    if not group_icons:
+                        return None, None
+
+                    # group_icons is a list of icon identifiers (group indices).
+                    # We take the first group and export it as .ico bytes.
+                    ico_bytes = extractor.export_icon(group_icons[0])
+                    if ico_bytes:
+                        return ico_bytes, "image/x-icon"
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+            except Exception:
+                # Extraction is best-effort; ignore and continue.
+                if os.getenv("PROVITY_DEBUG_ICON") == "1":
+                    try:
+                        st.sidebar.caption(f"[icon] extraction failed for {name}")
+                    except Exception:
+                        pass
+                return None, None
     except Exception:
         pass
     return None, None
+
+
+def _ico_bytes_to_png_bytes(ico_bytes: bytes) -> bytes | None:
+    """Convert .ico bytes to PNG bytes (best-effort).
+
+    Streamlit can be picky with some .ico variants; converting to PNG improves reliability.
+    If Pillow isn't available or conversion fails, return None.
+    """
+    if not ico_bytes:
+        return None
+
+    try:
+        from PIL import Image  # type: ignore
+
+        im = Image.open(BytesIO(ico_bytes))
+        # ICO can contain multiple sizes; pick the largest.
+        try:
+            n = getattr(im, "n_frames", 1)
+        except Exception:
+            n = 1
+
+        best = None
+        best_area = -1
+        for i in range(max(1, n)):
+            try:
+                im.seek(i)
+            except Exception:
+                break
+            w, h = im.size
+            if w * h > best_area:
+                best_area = w * h
+                best = im.copy()
+
+        if best is None:
+            best = im
+
+        if best.mode not in ("RGBA", "RGB"):
+            best = best.convert("RGBA")
+
+        out = BytesIO()
+        best.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _image_bytes_to_png_bytes(image_bytes: bytes, mime: str | None) -> bytes | None:
+    """Convert various image bytes to PNG (best-effort).
+
+    We primarily see ICO; PNG is passed through; other formats try Pillow.
+    """
+    if not image_bytes:
+        return None
+    if mime == "image/png":
+        return image_bytes
+    if mime in ("image/x-icon", "image/vnd.microsoft.icon"):
+        return _ico_bytes_to_png_bytes(image_bytes)
+    try:
+        from PIL import Image  # type: ignore
+
+        im = Image.open(BytesIO(image_bytes))
+        if im.mode not in ("RGBA", "RGB"):
+            im = im.convert("RGBA")
+        out = BytesIO()
+        im.save(out, format="PNG")
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _encode_icon_for_db(icon_bytes: bytes | None, icon_mime: str | None) -> tuple[str | None, str | None]:
+    """Return (b64, mime) to store in DB.
+
+    We store PNG bytes as base64 (most reliable to render in Streamlit).
+    """
+    if not icon_bytes:
+        return None, None
+
+    png_bytes = _image_bytes_to_png_bytes(icon_bytes, icon_mime)
+    if png_bytes:
+        return base64.b64encode(png_bytes).decode("ascii"), "image/png"
+
+    # Fallback: store original bytes.
+    try:
+        return base64.b64encode(icon_bytes).decode("ascii"), icon_mime
+    except Exception:
+        return None, None
+
+
+def _decode_icon_from_db(*, icon_b64: str | None, icon_b64_mime: str | None) -> tuple[bytes | None, str | None]:
+    """Decode icon from base64 DB fields (base64-only)."""
+    if not icon_b64:
+        return None, None
+    try:
+        return base64.b64decode(icon_b64), (icon_b64_mime or "image/png")
+    except Exception:
+        return None, None
 
 # Page Configuration
 # NOTE: `page_icon` sets the browser tab favicon in Streamlit.
@@ -144,6 +287,9 @@ with tab_scan:
         # Best-effort app icon extraction (currently: if uploaded file is .ico)
         icon_bytes, icon_mime = _extract_app_icon(uploaded_file)
 
+        # Prefer storing icons as base64 PNG for reliability.
+        icon_b64, icon_b64_mime = _encode_icon_for_db(icon_bytes, icon_mime)
+
         # Duplicate check (best-effort): if we've seen this hash before, show last scan time + score.
         if db_enabled and fetch_latest_scan_for_hash is not None:
             try:
@@ -155,9 +301,14 @@ with tab_scan:
                 st.info("We've seen this file before.")
 
                 # Show stored app icon (if any)
-                if prev.get("app_icon"):
+                prev_icon_bytes, prev_icon_mime = _decode_icon_from_db(
+                    icon_b64=prev.get("app_icon_b64"),
+                    icon_b64_mime=prev.get("app_icon_b64_mime"),
+                )
+                if prev_icon_bytes:
                     try:
-                        st.image(prev.get("app_icon"), width=48)
+                        png_bytes = _image_bytes_to_png_bytes(prev_icon_bytes, prev_icon_mime)
+                        st.image(png_bytes or prev_icon_bytes, width=48)
                     except Exception:
                         pass
 
@@ -336,8 +487,8 @@ with tab_scan:
                     original_filename=uploaded_file.name,
                     file_sha256=file_hash,
                     valid_signature=bool(sig_valid),
-                    app_icon=icon_bytes,
-                    app_icon_mime=icon_mime,
+                    app_icon_b64=icon_b64,
+                    app_icon_b64_mime=icon_b64_mime,
                     score=risk_score,
                     risk_level=risk_level,
                     metadata={
@@ -379,32 +530,11 @@ with tab_dashboard:
             recent = fetch_recent_scans(limit=int(recent_limit))
             file_summary = fetch_file_last_seen(limit_files=int(file_limit))
 
-            # Build a separate icon preview list (so we don't dump raw bytes into the dataframe).
-            icon_previews: list[tuple[int, bytes]] = []
-
             # Friendlier boolean display
             if recent:
                 for r in recent:
                     if "valid_signature" in r:
                         r["Signature"] = "✅" if r.get("valid_signature") else "❌"
-
-                # Hide the raw boolean from the table (keep the friendly indicator).
-                for r in recent:
-                    r.pop("valid_signature", None)
-
-                # Pull icon bytes out into a separate preview list and keep the table clean.
-                for r in recent:
-                    icon_bytes_row = r.get("app_icon")
-                    if icon_bytes_row:
-                        try:
-                            icon_previews.append((int(r["id"]), icon_bytes_row))
-                            r["Icon"] = "🖼️"
-                        except Exception:
-                            r["Icon"] = ""
-                    else:
-                        r["Icon"] = ""
-                    r.pop("app_icon", None)
-                    r.pop("app_icon_mime", None)
 
             # Top metrics
             if recent:
@@ -415,16 +545,48 @@ with tab_dashboard:
             st.dataframe(file_summary, use_container_width=True)
 
             st.markdown("### Recent scans")
-            if icon_previews:
-                st.caption("Icons (latest scans)")
-                cols = st.columns(min(8, len(icon_previews)))
-                for i, (_scan_id, icon_bytes_row) in enumerate(icon_previews[:8]):
-                    with cols[i % len(cols)]:
-                        try:
-                            st.image(icon_bytes_row, width=32)
-                        except Exception:
-                            pass
-            st.dataframe(recent, use_container_width=True)
+            if not recent:
+                st.info("No scan events yet.")
+            else:
+                # Custom row rendering so icons can be shown per-row.
+                header = st.columns([2.6, 1.0, 0.9, 1.1, 1.0, 1.8, 2.0])
+                header[0].markdown("**App**")
+                header[1].markdown("**Signature**")
+                header[2].markdown("**Risk**")
+                header[3].markdown("**Score**")
+                header[4].markdown("**User**")
+                header[5].markdown("**Scanned at**")
+                header[6].markdown("**File**")
+                st.divider()
+
+                for r in recent:
+                    cols = st.columns([2.6, 1.0, 0.9, 1.1, 1.0, 1.8, 2.0])
+
+                    # App column: icon + name
+                    with cols[0]:
+                        left, right = st.columns([0.22, 0.78])
+                        with left:
+                            icon_bytes_row, icon_mime_row = _decode_icon_from_db(
+                                icon_b64=r.get("app_icon_b64"),
+                                icon_b64_mime=r.get("app_icon_b64_mime"),
+                            )
+                            if icon_bytes_row:
+                                png_bytes = _image_bytes_to_png_bytes(icon_bytes_row, icon_mime_row)
+                                try:
+                                    st.image(png_bytes or icon_bytes_row, width=22)
+                                except Exception:
+                                    st.write(" ")
+                            else:
+                                st.write(" ")
+                        with right:
+                            st.write(r.get("app_name") or "Unknown")
+
+                    cols[1].write(r.get("Signature") or "")
+                    cols[2].write(str(r.get("risk_level") or ""))
+                    cols[3].write("N/A" if r.get("score") is None else f"{r.get('score')}/100")
+                    cols[4].write(str(r.get("user_id") or ""))
+                    cols[5].write(str(r.get("scanned_at") or ""))
+                    cols[6].write(str(r.get("original_filename") or ""))
 
         except Exception as e:
             st.error(f"Dashboard unavailable: {e}")

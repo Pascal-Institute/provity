@@ -15,3 +15,6 @@ pgdata/
 
 # Local env file
 .env
+
+# Local helper scripts (debug/one-off)
+scripts/
