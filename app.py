@@ -4,6 +4,7 @@ import os
 import hashlib
 from datetime import datetime
 import re
+from io import BytesIO
 
 from provity.risk import compute_risk_assessment
 from provity.scanners import (
@@ -54,6 +55,23 @@ def _guess_app_name(original_filename: str) -> str:
         # Title-case without shouting acronyms too much
         safe = name[:80]
         return safe
+
+
+def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
+    """Best-effort icon extraction.
+
+    Currently supported:
+      - .ico uploads: stored as-is.
+    """
+    try:
+        name = getattr(uploaded_file, "name", "") or ""
+        if name.lower().endswith(".ico"):
+            raw = uploaded_file.getvalue()
+            if raw:
+                return raw, "image/x-icon"
+    except Exception:
+        pass
+    return None, None
 
 # Page Configuration
 # NOTE: `page_icon` sets the browser tab favicon in Streamlit.
@@ -108,8 +126,8 @@ tab_scan, tab_dashboard = st.tabs(["Scan", "Dashboard"])
 with tab_scan:
     # File Upload
     uploaded_file = st.file_uploader(
-        "Upload file to scan (.exe, .dll, .sys, .msi, .deb)",
-        type=["exe", "dll", "sys", "msi", "deb"],
+        "Upload file to scan (.exe, .dll, .sys, .msi, .deb, .ico)",
+        type=["exe", "dll", "sys", "msi", "deb", "ico"],
     )
 
     if uploaded_file is None:
@@ -123,6 +141,9 @@ with tab_scan:
         # Compute hash early for duplicate checks and logging.
         file_hash = _sha256_file(tmp_path)
 
+        # Best-effort app icon extraction (currently: if uploaded file is .ico)
+        icon_bytes, icon_mime = _extract_app_icon(uploaded_file)
+
         # Duplicate check (best-effort): if we've seen this hash before, show last scan time + score.
         if db_enabled and fetch_latest_scan_for_hash is not None:
             try:
@@ -132,6 +153,14 @@ with tab_scan:
 
             if prev is not None:
                 st.info("We've seen this file before.")
+
+                # Show stored app icon (if any)
+                if prev.get("app_icon"):
+                    try:
+                        st.image(prev.get("app_icon"), width=48)
+                    except Exception:
+                        pass
+
                 c1, c2, c3, c4, c5 = st.columns([1.2, 1.0, 1.2, 1.8, 1.8])
                 with c1:
                     st.metric("Last scanned", str(prev.get("scanned_at") or "N/A"))
@@ -307,6 +336,8 @@ with tab_scan:
                     original_filename=uploaded_file.name,
                     file_sha256=file_hash,
                     valid_signature=bool(sig_valid),
+                    app_icon=icon_bytes,
+                    app_icon_mime=icon_mime,
                     score=risk_score,
                     risk_level=risk_level,
                     metadata={
@@ -348,6 +379,9 @@ with tab_dashboard:
             recent = fetch_recent_scans(limit=int(recent_limit))
             file_summary = fetch_file_last_seen(limit_files=int(file_limit))
 
+            # Build a separate icon preview list (so we don't dump raw bytes into the dataframe).
+            icon_previews: list[tuple[int, bytes]] = []
+
             # Friendlier boolean display
             if recent:
                 for r in recent:
@@ -358,6 +392,20 @@ with tab_dashboard:
                 for r in recent:
                     r.pop("valid_signature", None)
 
+                # Pull icon bytes out into a separate preview list and keep the table clean.
+                for r in recent:
+                    icon_bytes_row = r.get("app_icon")
+                    if icon_bytes_row:
+                        try:
+                            icon_previews.append((int(r["id"]), icon_bytes_row))
+                            r["Icon"] = "🖼️"
+                        except Exception:
+                            r["Icon"] = ""
+                    else:
+                        r["Icon"] = ""
+                    r.pop("app_icon", None)
+                    r.pop("app_icon_mime", None)
+
             # Top metrics
             if recent:
                 last_scan_time = recent[0]["scanned_at"]
@@ -367,6 +415,15 @@ with tab_dashboard:
             st.dataframe(file_summary, use_container_width=True)
 
             st.markdown("### Recent scans")
+            if icon_previews:
+                st.caption("Icons (latest scans)")
+                cols = st.columns(min(8, len(icon_previews)))
+                for i, (_scan_id, icon_bytes_row) in enumerate(icon_previews[:8]):
+                    with cols[i % len(cols)]:
+                        try:
+                            st.image(icon_bytes_row, width=32)
+                        except Exception:
+                            pass
             st.dataframe(recent, use_container_width=True)
 
         except Exception as e:

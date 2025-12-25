@@ -93,6 +93,20 @@ def ensure_schema(schema_path: str | os.PathLike[str] = DEFAULT_SCHEMA_PATH) -> 
                 """
             )
 
+            # Optional app icon storage (NULL when unavailable).
+            cur.execute(
+                """
+                ALTER TABLE scan_events
+                ADD COLUMN IF NOT EXISTS app_icon BYTEA
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE scan_events
+                ADD COLUMN IF NOT EXISTS app_icon_mime TEXT
+                """
+            )
+
             # Backfill existing rows from metadata.signature_valid when available.
             # We only update rows that are still FALSE, so rerunning is safe.
             cur.execute(
@@ -112,6 +126,8 @@ def insert_scan_event(
     original_filename: str | None,
     file_sha256: str,
     valid_signature: bool = False,
+    app_icon: bytes | None = None,
+    app_icon_mime: str | None = None,
     score: int | None,
     risk_level: str | None,
     metadata: dict[str, Any] | None = None,
@@ -123,10 +139,30 @@ def insert_scan_event(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO scan_events (user_id, original_filename, file_sha256, valid_signature, score, risk_level, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
+                INSERT INTO scan_events (
+                    user_id,
+                    original_filename,
+                    file_sha256,
+                    valid_signature,
+                    app_icon,
+                    app_icon_mime,
+                    score,
+                    risk_level,
+                    metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 """,
-                (user_id, original_filename, file_sha256, bool(valid_signature), score, risk_level, json.dumps(metadata)),
+                (
+                    user_id,
+                    original_filename,
+                    file_sha256,
+                    bool(valid_signature),
+                    app_icon,
+                    app_icon_mime,
+                    score,
+                    risk_level,
+                    json.dumps(metadata),
+                ),
             )
         conn.commit()
 
@@ -148,6 +184,8 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
                                     COALESCE(metadata->>'signature_issuer', '') AS signature_issuer,
                   file_sha256,
                                     valid_signature,
+                                    app_icon,
+                                    app_icon_mime,
                   score,
                   risk_level
                 FROM scan_events
@@ -169,8 +207,10 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
             "signature_issuer": r[6] or "",
             "file_sha256": r[7],
             "valid_signature": bool(r[8]),
-            "score": r[9],
-            "risk_level": r[10],
+            "app_icon": r[9],
+            "app_icon_mime": r[10],
+            "score": r[11],
+            "risk_level": r[12],
         }
         for r in rows
     ]
@@ -237,7 +277,9 @@ def fetch_latest_scan_for_hash(file_sha256: str) -> dict[str, Any] | None:
                                     original_filename,
                                     COALESCE(metadata->>'app_name','') AS app_name,
                                     COALESCE(metadata->>'signature_signer','') AS signature_signer,
-                                    COALESCE(metadata->>'signature_issuer','') AS signature_issuer
+                                    COALESCE(metadata->>'signature_issuer','') AS signature_issuer,
+                                    app_icon,
+                                    app_icon_mime
                 FROM scan_events
                 WHERE file_sha256 = %s
                 ORDER BY scanned_at DESC
@@ -258,4 +300,6 @@ def fetch_latest_scan_for_hash(file_sha256: str) -> dict[str, Any] | None:
         "app_name": row[4] or "Unknown",
         "signature_signer": row[5] or "",
         "signature_issuer": row[6] or "",
+        "app_icon": row[7],
+        "app_icon_mime": row[8],
     }

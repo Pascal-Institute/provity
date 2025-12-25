@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS scan_events (
   original_filename TEXT,
   file_sha256 TEXT NOT NULL,
   valid_signature BOOLEAN NOT NULL DEFAULT FALSE,
+  app_icon BYTEA,
+  app_icon_mime TEXT,
   score INTEGER,
   risk_level TEXT,
   scanned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
