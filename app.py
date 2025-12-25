@@ -3,6 +3,7 @@ import tempfile
 import os
 import hashlib
 from datetime import datetime
+import re
 
 from provity.risk import compute_risk_assessment
 from provity.scanners import (
@@ -28,6 +29,30 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _guess_app_name(original_filename: str) -> str:
+        """Derive a user-friendly app name from an uploaded filename.
+
+        This is intentionally lightweight and offline-first.
+        Examples:
+            - "GoogleChromeStandaloneEnterprise64.msi" -> "Google Chrome"
+            - "notion-setup-3.2.1.exe" -> "Notion"
+        """
+        name = os.path.basename(original_filename)
+        name = re.sub(r"\.[A-Za-z0-9]{1,6}$", "", name)  # strip extension
+        name = name.replace("_", " ").replace("-", " ").strip()
+        # drop common suffix tokens
+        name = re.sub(r"\b(setup|installer|install|x64|x86|amd64|arm64|win64|win32)\b", "", name, flags=re.IGNORECASE)
+        name = re.sub(r"\b(v)?\d+(?:\.\d+){0,3}\b", "", name, flags=re.IGNORECASE)  # versions
+        name = re.sub(r"\s+", " ", name).strip()
+
+        if not name:
+                return "Unknown"
+
+        # Title-case without shouting acronyms too much
+        safe = name[:80]
+        return safe
 
 # Page Configuration
 st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
@@ -198,15 +223,15 @@ with tab_scan:
             st.warning("⚠️ Scanner Error")
             st.write(scan_log)
 
-            st.markdown("---")
-        
-            # Static Analysis
-            st.subheader("3️⃣ Static Analysis (IoC Extraction)")
-            with st.spinner("Extracting Strings..."):
-                if is_deb and deb_scan is not None:
-                    artifacts = deb_scan.get("artifacts", {})
-                else:
-                    artifacts = static_analysis(tmp_path)
+        st.markdown("---")
+
+        # Static Analysis
+        st.subheader("3️⃣ Static Analysis (IoC Extraction)")
+        with st.spinner("Extracting Strings..."):
+            if is_deb and deb_scan is not None:
+                artifacts = deb_scan.get("artifacts", {})
+            else:
+                artifacts = static_analysis(tmp_path)
         
         has_artifacts = any(v for v in artifacts.values())
         
@@ -251,6 +276,7 @@ with tab_scan:
                     score=risk_score,
                     risk_level=risk_level,
                     metadata={
+                        "app_name": _guess_app_name(uploaded_file.name),
                         "is_deb": bool(is_deb),
                         "signature_backend": sig_detail.get("backend"),
                         "signature_valid": bool(sig_valid),

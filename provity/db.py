@@ -117,7 +117,15 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, scanned_at, user_id, original_filename, file_sha256, score, risk_level
+                SELECT
+                  id,
+                  scanned_at,
+                  user_id,
+                  original_filename,
+                  COALESCE(metadata->>'app_name', '') AS app_name,
+                  file_sha256,
+                  score,
+                  risk_level
                 FROM scan_events
                 ORDER BY scanned_at DESC
                 LIMIT %s
@@ -132,9 +140,10 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
             "scanned_at": r[1],
             "user_id": r[2],
             "original_filename": r[3],
-            "file_sha256": r[4],
-            "score": r[5],
-            "risk_level": r[6],
+            "app_name": r[4] or "Unknown",
+            "file_sha256": r[5],
+            "score": r[6],
+            "risk_level": r[7],
         }
         for r in rows
     ]
@@ -154,7 +163,8 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
                   COUNT(*) AS scan_count,
                   MAX(score) AS max_score,
                   (ARRAY_AGG(risk_level ORDER BY scanned_at DESC))[1] AS last_risk_level,
-                  (ARRAY_AGG(original_filename ORDER BY scanned_at DESC))[1] AS last_filename
+                                    (ARRAY_AGG(original_filename ORDER BY scanned_at DESC))[1] AS last_filename,
+                                    (ARRAY_AGG(COALESCE(metadata->>'app_name','') ORDER BY scanned_at DESC))[1] AS last_app_name
                 FROM scan_events
                 GROUP BY file_sha256
                 ORDER BY last_scanned_at DESC
@@ -172,6 +182,7 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
             "max_score": r[3],
             "last_risk_level": r[4],
             "last_filename": r[5],
+            "app_name": r[6] or "Unknown",
         }
         for r in rows
     ]
