@@ -56,7 +56,8 @@ def _guess_app_name(original_filename: str) -> str:
         return safe
 
 # Page Configuration
-st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
+# NOTE: `page_icon` sets the browser tab favicon in Streamlit.
+st.set_page_config(page_title="Provity : Trustured Software Validator", page_icon="🛡️", layout="wide")
 
 st.title("🛡️ Provity : Trustured Software Validator")
 st.markdown("""
