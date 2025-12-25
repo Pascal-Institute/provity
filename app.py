@@ -142,6 +142,8 @@ with tab_scan:
 
                 st.caption(
                     f"App name: {prev.get('app_name') or 'Unknown'} · "
+                    f"Signer: {prev.get('signature_signer') or 'N/A'} · "
+                    f"Issuer: {prev.get('signature_issuer') or 'N/A'} · "
                     f"Last uploaded as: {prev.get('original_filename') or 'Unknown'}"
                 )
 
@@ -306,6 +308,8 @@ with tab_scan:
                         "is_deb": bool(is_deb),
                         "signature_backend": sig_detail.get("backend"),
                         "signature_valid": bool(sig_valid),
+                        "signature_signer": sig_info.get("signer") if isinstance(sig_info, dict) else None,
+                        "signature_issuer": sig_detail.get("issuer"),
                         "clam_state": is_clean,
                         "clam_label": virus_name,
                     },

@@ -123,6 +123,8 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
                   user_id,
                   original_filename,
                   COALESCE(metadata->>'app_name', '') AS app_name,
+                                    COALESCE(metadata->>'signature_signer', '') AS signature_signer,
+                                    COALESCE(metadata->>'signature_issuer', '') AS signature_issuer,
                   file_sha256,
                   score,
                   risk_level
@@ -141,9 +143,11 @@ def fetch_recent_scans(limit: int = 50) -> list[dict[str, Any]]:
             "user_id": r[2],
             "original_filename": r[3],
             "app_name": r[4] or "Unknown",
-            "file_sha256": r[5],
-            "score": r[6],
-            "risk_level": r[7],
+            "signature_signer": r[5] or "",
+            "signature_issuer": r[6] or "",
+            "file_sha256": r[7],
+            "score": r[8],
+            "risk_level": r[9],
         }
         for r in rows
     ]
@@ -164,7 +168,9 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
                   MAX(score) AS max_score,
                   (ARRAY_AGG(risk_level ORDER BY scanned_at DESC))[1] AS last_risk_level,
                                     (ARRAY_AGG(original_filename ORDER BY scanned_at DESC))[1] AS last_filename,
-                                    (ARRAY_AGG(COALESCE(metadata->>'app_name','') ORDER BY scanned_at DESC))[1] AS last_app_name
+                                    (ARRAY_AGG(COALESCE(metadata->>'app_name','') ORDER BY scanned_at DESC))[1] AS last_app_name,
+                                    (ARRAY_AGG(COALESCE(metadata->>'signature_signer','') ORDER BY scanned_at DESC))[1] AS last_signature_signer,
+                                    (ARRAY_AGG(COALESCE(metadata->>'signature_issuer','') ORDER BY scanned_at DESC))[1] AS last_signature_issuer
                 FROM scan_events
                 GROUP BY file_sha256
                 ORDER BY last_scanned_at DESC
@@ -183,6 +189,8 @@ def fetch_file_last_seen(limit_files: int = 50) -> list[dict[str, Any]]:
             "last_risk_level": r[4],
             "last_filename": r[5],
             "app_name": r[6] or "Unknown",
+            "signature_signer": r[7] or "",
+            "signature_issuer": r[8] or "",
         }
         for r in rows
     ]
@@ -199,7 +207,14 @@ def fetch_latest_scan_for_hash(file_sha256: str) -> dict[str, Any] | None:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT scanned_at, score, risk_level, original_filename, COALESCE(metadata->>'app_name','') AS app_name
+                                SELECT
+                                    scanned_at,
+                                    score,
+                                    risk_level,
+                                    original_filename,
+                                    COALESCE(metadata->>'app_name','') AS app_name,
+                                    COALESCE(metadata->>'signature_signer','') AS signature_signer,
+                                    COALESCE(metadata->>'signature_issuer','') AS signature_issuer
                 FROM scan_events
                 WHERE file_sha256 = %s
                 ORDER BY scanned_at DESC
@@ -218,4 +233,6 @@ def fetch_latest_scan_for_hash(file_sha256: str) -> dict[str, Any] | None:
         "risk_level": row[2],
         "original_filename": row[3],
         "app_name": row[4] or "Unknown",
+        "signature_signer": row[5] or "",
+        "signature_issuer": row[6] or "",
     }
