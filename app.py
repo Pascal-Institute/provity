@@ -354,6 +354,10 @@ with tab_dashboard:
                     if "valid_signature" in r:
                         r["Signature"] = "✅" if r.get("valid_signature") else "❌"
 
+                # Hide the raw boolean from the table (keep the friendly indicator).
+                for r in recent:
+                    r.pop("valid_signature", None)
+
             # Top metrics
             if recent:
                 last_scan_time = recent[0]["scanned_at"]
