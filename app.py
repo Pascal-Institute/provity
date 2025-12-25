@@ -18,6 +18,61 @@ st.markdown("""
 # File Upload
 uploaded_file = st.file_uploader("Upload file to scan (.exe, .dll, .sys, .msi)", type=["exe", "dll", "sys", "msi"])
 
+def compute_risk_assessment(sig_valid, sig_info, clam_clean_state, clam_label, artifacts):
+    """Compute a simple risk score/level and evidence list from scan outputs."""
+    score = 0
+    evidence = []
+
+    # Signature
+    if sig_valid:
+        signer = (sig_info or {}).get("signer") or "Unknown"
+        evidence.append(f"Signature: valid (Signer: {signer})")
+        if signer.strip().lower() == "unknown":
+            score += 5
+    else:
+        score += 25
+        evidence.append("Signature: missing or invalid")
+
+    # ClamAV
+    if clam_clean_state is True:
+        evidence.append("ClamAV: clean")
+    elif clam_clean_state is False:
+        score += 80
+        evidence.append(f"ClamAV: malware detected ({clam_label})")
+    else:
+        score += 25
+        evidence.append(f"ClamAV: scanner error ({clam_label})")
+
+    # Static IoCs
+    artifact_weights = {
+        "Suspicious Cmd": 20,
+        "URL": 15,
+        "IP Address": 10,
+        "Registry Key": 10,
+    }
+
+    artifacts = artifacts or {}
+    any_artifacts = False
+    for category, items in artifacts.items():
+        if not items:
+            continue
+        any_artifacts = True
+        score += artifact_weights.get(category, 5)
+        evidence.append(f"Static IoC: {category} found ({len(items)})")
+
+    if not any_artifacts:
+        evidence.append("Static IoC: none found")
+
+    score = max(0, min(100, score))
+    if score >= 70:
+        level = "High"
+    elif score >= 30:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    return score, level, evidence
+
 def verify_signature(file_path):
     """Signature verification using osslsigncode"""
     ca_path = "/etc/ssl/certs/ca-certificates.crt"
@@ -162,6 +217,26 @@ if uploaded_file is not None:
                         st.code(item, language="text")
         else:
             st.info("No suspicious strings or URLs found.")
+
+    st.markdown("---")
+    st.subheader("Risk Summary")
+    risk_score, risk_level, risk_evidence = compute_risk_assessment(
+        sig_valid=sig_valid,
+        sig_info=sig_info,
+        clam_clean_state=is_clean,
+        clam_label=virus_name,
+        artifacts=artifacts,
+    )
+
+    if risk_level == "Low":
+        st.success(f"Overall Risk: {risk_level}")
+    elif risk_level == "Medium":
+        st.warning(f"Overall Risk: {risk_level}")
+    else:
+        st.error(f"Overall Risk: {risk_level}")
+
+    st.metric("Risk Score", f"{risk_score}/100")
+    st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
 
     # Cleanup
     os.remove(tmp_path)
