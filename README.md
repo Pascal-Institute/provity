@@ -1,4 +1,4 @@
-# Provity: Local Security Analyzer
+# Provity: Trustured Software Validator
 
 Provity is a Streamlit-based interface for locally assessing Windows executables without relying on external network calls. It orchestrates three on-box checks: signature verification (osslsigncode), malware scanning (ClamAV), and a lightweight static strings pass for common IoCs.
 

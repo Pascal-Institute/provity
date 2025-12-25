@@ -5,7 +5,7 @@ import os
 import re
 
 # Page Configuration
-st.set_page_config(page_title="Provity : Local Security Analyzer", layout="wide")
+st.set_page_config(page_title="Provity : Trustured Software Validator", layout="wide")
 
 st.title("🛡️ Provity : Trustured Software Validator")
 st.markdown("""
