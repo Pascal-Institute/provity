@@ -192,9 +192,12 @@ with tab_scan:
             if sig_valid:
                 st.success("✅ Valid Signature")
                 st.info(f"**Signer:** {sig_info.get('signer')}")
+                st.info(f"**Issuer:** {sig_detail.get('issuer') or 'N/A'}")
             else:
                 st.error("❌ Invalid / Unsigned")
                 st.warning("Digital signature is missing or invalid.")
+                st.info(f"**Signer:** {sig_info.get('signer') or 'Unknown'}")
+                st.info(f"**Issuer:** {sig_detail.get('issuer') or 'N/A'}")
 
             with st.expander("Structured Details"):
                 st.write(f"**Backend:** {sig_detail.get('backend', 'unknown')}")
