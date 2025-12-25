@@ -1,0 +1,11 @@
+# Ignore Python bytecode caches and common build/venv folders
+__pycache__/
+*.py[cod]
+
+# Ignore virtualenv and build artifacts
+.venv/
+env/
+venv/
+build/
+dist/
+.pytest_cache/
