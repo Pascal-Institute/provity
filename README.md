@@ -167,6 +167,7 @@ Configure these repository secrets:
 - `DEPLOY_PORT`: SSH port (e.g. `22`)
 - `DEPLOY_USER`: SSH username
 - `DEPLOY_SSH_KEY`: private key (PEM) for SSH auth
+- `DEPLOY_SSH_PASSPHRASE`: (optional) passphrase for `DEPLOY_SSH_KEY` if the private key is encrypted
 - `DEPLOY_PROVITY_DIR`: absolute path to the repo on the server (e.g. `/home/pascal/provity`)
 
 ### Recommended: systemd
