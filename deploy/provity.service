@@ -1,0 +1,15 @@
+[Unit]
+Description=Provity Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=provity
+WorkingDirectory=/home/provity/provity
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/provity/provity/.venv/bin/python -m streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

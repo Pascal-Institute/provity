@@ -152,6 +152,28 @@ Run tests:
 python3 -m pytest -q
 ```
 
+## Deploy (PC2 push → PC1 auto-update)
+
+If PC1 can be reached by SSH from GitHub Actions, you can auto-deploy on every push to `main`.
+
+- Workflow: `.github/workflows/deploy_pc1.yml`
+- Remote script: `scripts/deploy_pc1.sh` (runs `git fetch/reset`, installs deps, and restarts Streamlit)
+
+### GitHub repo secrets required
+
+Configure these repository secrets:
+
+- `PC1_HOST`: PC1 public hostname/IP
+- `PC1_PORT`: SSH port (e.g. `22`)
+- `PC1_USER`: SSH username
+- `PC1_SSH_KEY`: private key (PEM) for SSH auth
+- `PC1_PROVITY_DIR`: absolute path to the repo on PC1 (e.g. `/home/provity/provity`)
+
+### Recommended: systemd
+
+For reliable restarts, install the sample unit `deploy/provity.service` on PC1 (adjust paths/user) and enable it.
+If `provity.service` is not present, the deploy script falls back to restarting via `nohup`.
+
 The app starts a local web UI.
 
 - Upload a file (`.exe`, `.dll`, `.sys`, `.msi`, `.deb`) to initiate analysis.

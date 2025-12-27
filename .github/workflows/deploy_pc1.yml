@@ -1,0 +1,30 @@
+name: Deploy to PC1
+
+on:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: provity-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PC1_HOST }}
+          username: ${{ secrets.PC1_USER }}
+          key: ${{ secrets.PC1_SSH_KEY }}
+          port: ${{ secrets.PC1_PORT }}
+          script_stop: true
+          envs: PROVITY_DIR
+          script: |
+            set -euo pipefail
+            export PROVITY_DIR="${{ secrets.PC1_PROVITY_DIR }}"
+            cd "$PROVITY_DIR"
+            chmod +x scripts/deploy_pc1.sh
+            PROVITY_DIR="$PROVITY_DIR" ./scripts/deploy_pc1.sh
