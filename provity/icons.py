@@ -181,7 +181,7 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
                     pass
             return None, None
 
-        def _build_ico_from_pe(pe: "pefile.PE") -> bytes | None:
+        def _best_icon_bytes_from_pe(pe: "pefile.PE") -> tuple[bytes | None, str | None]:
             RT_ICON = pefile.RESOURCE_TYPE["RT_ICON"]
             RT_GROUP_ICON = pefile.RESOURCE_TYPE["RT_GROUP_ICON"]
 
@@ -239,10 +239,15 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
                     parsed.append((width, height, color_count, planes, bit_count, img))
 
             if not parsed:
-                return None
+                return None, None
 
             best = max(parsed, key=lambda x: (int(x[0] or 256) * int(x[1] or 256), len(x[5])))
             width, height, color_count, planes, bit_count, img = best
+
+            # Many modern Windows binaries store icon images as raw PNG in RT_ICON.
+            # Prefer returning the PNG bytes directly (Streamlit + Pillow handle this reliably).
+            if img.startswith(b"\x89PNG\r\n\x1a\n"):
+                return img, "image/png"
 
             out = bytearray()
             out += (0).to_bytes(2, "little")  # reserved
@@ -251,12 +256,17 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
 
             img_offset = 6 + 16
             out += bytes([width, height, color_count, 0])
-            out += int(planes).to_bytes(2, "little")
-            out += int(bit_count).to_bytes(2, "little")
+
+            # Some group icon entries can have 0 planes/bitcount for PNG payloads.
+            # Use safe defaults so Pillow can parse the ICO wrapper if needed.
+            planes_i = int(planes) if int(planes) > 0 else 1
+            bit_count_i = int(bit_count) if int(bit_count) > 0 else 32
+            out += planes_i.to_bytes(2, "little")
+            out += bit_count_i.to_bytes(2, "little")
             out += int(len(img)).to_bytes(4, "little")
             out += int(img_offset).to_bytes(4, "little")
             out += img
-            return bytes(out)
+            return bytes(out), "image/x-icon"
 
         # pefile prefers a file path.
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(name).suffix) as f:
@@ -270,9 +280,9 @@ def _extract_app_icon(uploaded_file) -> tuple[bytes | None, str | None]:
             except Exception:
                 pass
 
-            ico_bytes = _build_ico_from_pe(pe)
-            if ico_bytes:
-                return ico_bytes, "image/x-icon"
+            icon_bytes, icon_mime = _best_icon_bytes_from_pe(pe)
+            if icon_bytes:
+                return icon_bytes, (icon_mime or "image/x-icon")
 
             if st is not None:
                 try:
