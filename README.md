@@ -157,7 +157,7 @@ python3 -m pytest -q
 If PC1 can be reached by SSH from GitHub Actions, you can auto-deploy on every push to `main`.
 
 - Workflow: `.github/workflows/deploy_server.yml`
-- Remote script: `scripts/deploy_pc1.sh` (runs `git fetch/reset`, installs deps, and restarts Streamlit)
+- Remote script: `scripts/deploy_server.sh` (runs `git fetch/reset`, installs deps, and restarts Streamlit)
 
 ### GitHub repo secrets required
 

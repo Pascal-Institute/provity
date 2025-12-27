@@ -26,5 +26,5 @@ jobs:
             set -euo pipefail
             export PROVITY_DIR="${{ secrets.DEPLOY_PROVITY_DIR }}"
             cd "$PROVITY_DIR"
-            chmod +x scripts/deploy_pc1.sh
-            PROVITY_DIR="$PROVITY_DIR" ./scripts/deploy_pc1.sh
+            chmod +x scripts/deploy_server.sh
+            PROVITY_DIR="$PROVITY_DIR" ./scripts/deploy_server.sh
