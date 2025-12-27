@@ -553,57 +553,70 @@ with tab_scan:
                     virus_name = clam_detail.get("label")
                     scan_log = clam_detail.get("raw_log")
 
-        if is_clean is True:
-            st.success("✅ Clean (No Threats Detected)")
-            st.caption("No threats detected by ClamAV for the enabled checks.")
-        elif is_clean is False:
-            st.error(f"🚫 Threat Detected: {virus_name}")
-            if isinstance(virus_name, str) and ":" in virus_name:
-                st.caption("ClamAV detected a categorized threat (e.g., PUA/Phishing/Macro/Heuristic).")
+            if is_clean is True:
+                st.success("✅ Clean (No Threats Detected)")
+                st.caption("No threats detected by ClamAV for the enabled checks.")
+            elif is_clean is False:
+                st.error(f"🚫 Threat Detected: {virus_name}")
+                if isinstance(virus_name, str) and ":" in virus_name:
+                    st.caption("ClamAV detected a categorized threat (e.g., PUA/Phishing/Macro/Heuristic).")
+                else:
+                    st.caption("ClamAV detected a security threat.")
             else:
-                st.caption("ClamAV detected a security threat.")
-        else:
-            st.warning("⚠️ Scanner Error")
-            st.write(scan_log)
+                st.warning("⚠️ Scanner Error")
+                st.write(scan_log)
 
-        with st.expander("ClamAV Scan Details"):
-            requested = None
-            effective = None
-            used_flags = None
-            fallback_reason = None
-            if isinstance(clam_detail, dict):
-                requested = clam_detail.get("extended_requested")
-                effective = clam_detail.get("extended_effective")
-                used_flags = clam_detail.get("flags")
-                fallback_reason = clam_detail.get("fallback_reason")
+            with st.expander("ClamAV Scan Details"):
+                requested = None
+                effective = None
+                used_flags = None
+                fallback_reason = None
+                findings = None
+                if isinstance(clam_detail, dict):
+                    requested = clam_detail.get("extended_requested")
+                    effective = clam_detail.get("extended_effective")
+                    used_flags = clam_detail.get("flags")
+                    fallback_reason = clam_detail.get("fallback_reason")
+                    findings = clam_detail.get("findings")
 
-            st.write(f"**Extended checks requested:** {requested if requested is not None else 'Unknown'}")
-            st.write(f"**Extended checks effective:** {effective if effective is not None else 'Unknown'}")
-            if fallback_reason:
-                st.warning(str(fallback_reason))
+                st.write(f"**Extended checks requested:** {requested if requested is not None else 'Unknown'}")
+                st.write(f"**Extended checks effective:** {effective if effective is not None else 'Unknown'}")
+                if fallback_reason:
+                    st.warning(str(fallback_reason))
 
-            # Step-by-step: show which classes of checks are enabled based on flags.
-            flag_set = set(str(x) for x in (used_flags or []))
-            steps = [
-                ("Base scan", True),
-                ("PUA detection", any("--detect-pua" in f for f in flag_set)),
-                ("Phishing signatures", any("--phishing-sigs" in f for f in flag_set)),
-                ("Phishing URL scan", any("--phishing-scan-urls" in f for f in flag_set)),
-                ("Heuristic alerts", any("--heuristic-alerts" in f for f in flag_set)),
-                ("Macro alerts", any("--alert-macros" in f for f in flag_set)),
-                ("Encrypted content alerts", any("--alert-encrypted" in f for f in flag_set)),
-                ("Broken executable alerts", any("--alert-broken" in f for f in flag_set)),
-                ("Broken media alerts", any("--alert-broken-media" in f for f in flag_set)),
-                ("Exceeds-max alerts", any("--alert-exceeds-max" in f for f in flag_set)),
-                ("Phishing SSL alerts", any("--alert-phishing-ssl" in f for f in flag_set)),
-                ("Phishing cloak alerts", any("--alert-phishing-cloak" in f for f in flag_set)),
-            ]
-            for name, enabled in steps:
-                st.write(f"- {name}: {'ON' if enabled else 'OFF'}")
+                # Step-by-step: show which classes of checks are enabled based on flags.
+                flag_set = set(str(x) for x in (used_flags or []))
+                steps = [
+                    ("Base scan", True),
+                    ("PUA detection", any("--detect-pua" in f for f in flag_set)),
+                    ("Phishing signatures", any("--phishing-sigs" in f for f in flag_set)),
+                    ("Phishing URL scan", any("--phishing-scan-urls" in f for f in flag_set)),
+                    ("Heuristic alerts", any("--heuristic-alerts" in f for f in flag_set)),
+                    ("Macro alerts", any("--alert-macros" in f for f in flag_set)),
+                    ("Encrypted content alerts", any("--alert-encrypted" in f for f in flag_set)),
+                    ("Broken executable alerts", any("--alert-broken" in f for f in flag_set)),
+                    ("Broken media alerts", any("--alert-broken-media" in f for f in flag_set)),
+                    ("Exceeds-max alerts", any("--alert-exceeds-max" in f for f in flag_set)),
+                    ("Phishing SSL alerts", any("--alert-phishing-ssl" in f for f in flag_set)),
+                    ("Phishing cloak alerts", any("--alert-phishing-cloak" in f for f in flag_set)),
+                ]
+                for name, enabled in steps:
+                    st.write(f"- {name}: {'ON' if enabled else 'OFF'}")
 
-            if used_flags:
-                st.caption("Flags used:")
-                st.code(" ".join(str(x) for x in used_flags), language="text")
+                if used_flags:
+                    st.caption("Flags used:")
+                    st.code(" ".join(str(x) for x in used_flags), language="text")
+
+                if isinstance(findings, list) and findings:
+                    st.caption("Findings:")
+                    for f in findings[:20]:
+                        try:
+                            st.write(f"- {f.get('category', 'Threat')}: {f.get('signature', 'Unknown')} ({f.get('path', '')})")
+                        except Exception:
+                            continue
+
+                st.caption("Raw clamscan output:")
+                st.code(str(scan_log or ""), language="text")
 
         st.markdown("---")
 
