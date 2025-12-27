@@ -16,6 +16,7 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
 ## Requirements
 
 - Python 3.9+ with Streamlit installed (`pip install streamlit`).
+- Python packages in `requirements.txt` (includes `Pillow` and `pefile` for icon handling on Windows PE files).
 - System binaries available on PATH:
   - `osslsigncode`
   - `clamscan` (ClamAV)
@@ -56,6 +57,14 @@ If you _do_ want isolation:
 python3 -m venv .venv
 . .venv/bin/activate
 python3 -m pip install -r requirements.txt
+```
+
+On Windows PowerShell (example):
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 ```
 
 ### System tools
@@ -120,6 +129,28 @@ From the project root, launch Streamlit (system Python):
 ```bash
 python3 -m streamlit run app.py
 ````
+
+On Windows PowerShell (example):
+
+```powershell
+python -m streamlit run app.py
+```
+
+## Tests
+
+Provity includes a lightweight pytest suite that does not require ClamAV/osslsigncode/Postgres to be installed (it uses mocks for external tools).
+
+Install dev dependencies:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+```
+
+Run tests:
+
+```bash
+python3 -m pytest -q
+```
 
 The app starts a local web UI.
 
