@@ -370,6 +370,13 @@ with st.sidebar:
     st.divider()
     st.caption("Anonymous mode: when logging is enabled, scans are stored as user_id='anonymous'.")
 
+    st.divider()
+    clamav_extended = st.toggle(
+        "Enable ClamAV extended checks",
+        value=True,
+        help="Best-effort extra detections (PUA/phishing/macro/encrypted/broken). Disable to reduce false positives or improve performance.",
+    )
+
 
 tab_scan, tab_dashboard = st.tabs(["Scan", "Dashboard"])
 
@@ -452,7 +459,7 @@ with tab_scan:
         if is_deb:
             with st.spinner("Analyzing .deb package..."):
                 try:
-                    deb_scan = scan_deb_package(tmp_path)
+                    deb_scan = scan_deb_package(tmp_path, enable_extended=bool(clamav_extended))
                 except Exception as e:
                     deb_scan = {
                         "sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": str(e)},
@@ -538,15 +545,15 @@ with tab_scan:
             if is_deb and deb_scan is not None:
                 is_clean, virus_name, scan_log = deb_scan.get("clam_result", (None, "ClamAV not run", ""))
             else:
-                with st.spinner("Scanning Malware (ClamAV)..."):
-                    is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path)
+                with st.spinner("Scanning threats (ClamAV)..."):
+                    is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path, enable_extended=bool(clamav_extended))
 
         if is_clean is True:
             st.success("✅ Clean (No Malware Detected)")
             st.caption("Safe according to ClamAV engine scan results.")
         elif is_clean is False:
-            st.error(f"🚫 Malware Detected: {virus_name}")
-            st.caption("ClamAV engine detected malicious code.")
+            st.error(f"🚫 Threat Detected: {virus_name}")
+            st.caption("ClamAV engine detected a security threat (malware/PUA/phishing/etc.).")
         else:
             st.warning("⚠️ Scanner Error")
             st.write(scan_log)
@@ -616,6 +623,8 @@ with tab_scan:
                         "signature_issuer": sig_detail.get("issuer"),
                         "clam_state": is_clean,
                         "clam_label": virus_name,
+                        "clam_category": (str(virus_name).split(":", 1)[0].strip() if isinstance(virus_name, str) and ":" in str(virus_name) else None),
+                        "clam_extended_enabled": bool(clamav_extended),
                     },
                 )
                 st.sidebar.success("Logged to DB")

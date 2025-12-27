@@ -28,8 +28,12 @@ def compute_risk_assessment(
     if clam_clean_state is True:
         evidence.append("ClamAV: clean")
     elif clam_clean_state is False:
-        score += 80
-        evidence.append(f"ClamAV: malware detected ({clam_label})")
+        category, weight = _clamav_category_and_weight(clam_label)
+        score += weight
+        if category == "Malware":
+            evidence.append(f"ClamAV: malware detected ({clam_label})")
+        else:
+            evidence.append(f"ClamAV: {category} detected ({clam_label})")
     else:
         score += 25
         evidence.append(f"ClamAV: scanner error ({clam_label})")
@@ -63,3 +67,46 @@ def compute_risk_assessment(
         level = "Low"
 
     return score, level, evidence
+
+
+def _clamav_category_and_weight(clam_label: str) -> tuple[str, int]:
+    """Infer a threat category from the clamscan label.
+
+    We keep this best-effort and backward-compatible: if the label doesn't
+    look categorized, default to Malware.
+    """
+    label = (clam_label or "").strip()
+    lower = label.lower()
+
+    # If the scanners prefix the label as "Category: ...", prefer that.
+    if ":" in label:
+        prefix = label.split(":", 1)[0].strip().lower()
+        if prefix in {"pua", "phishing", "macro", "encrypted", "heuristic", "malware", "threat"}:
+            if prefix == "threat":
+                return "Malware", 80
+            if prefix == "pua":
+                return "PUA", 45
+            if prefix == "phishing":
+                return "Phishing", 70
+            if prefix == "macro":
+                return "Macro", 55
+            if prefix == "encrypted":
+                return "Encrypted", 30
+            if prefix == "heuristic":
+                return "Heuristic", 40
+            if prefix == "malware":
+                return "Malware", 80
+
+    # Heuristic inference for legacy labels
+    if "pua" in lower:
+        return "PUA", 45
+    if "phish" in lower:
+        return "Phishing", 70
+    if "macro" in lower:
+        return "Macro", 55
+    if "encrypt" in lower:
+        return "Encrypted", 30
+    if "heuristic" in lower or lower.startswith("heuristics.") or "broken" in lower or "exceed" in lower:
+        return "Heuristic", 40
+
+    return "Malware", 80

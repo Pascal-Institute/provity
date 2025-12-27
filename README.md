@@ -6,7 +6,8 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
 
 - Offline-first workflow: all analysis stays on the local host.
 - Signature verification via osslsigncode with CA bundle validation.
-- Malware scan using the ClamAV CLI (clamscan) and concise result messaging.
+- Threat scan using the ClamAV CLI (clamscan) and concise result messaging.
+- ClamAV extended checks (best-effort): may detect PUA/phishing/macro/encrypted/broken-file alerts depending on the local clamscan build.
 - Static strings extraction (strings) with simple heuristics for IPs, URLs, shell usage, and registry keys.
 - Risk Summary: overall risk level (Low/Medium/High), score (0–100), and evidence list.
 - Temporary files are cleaned after each scan.
@@ -49,7 +50,7 @@ python3 -m streamlit run app.py
 
 ### Option B: use a virtual environment (optional)
 
-If you *do* want isolation:
+If you _do_ want isolation:
 
 ```bash
 python3 -m venv .venv
@@ -72,7 +73,7 @@ docker compose ps
 
 Then set the connection string (example):
 
-```bash
+````bash
 export DATABASE_URL='postgresql://provity:provity@localhost:5432/provity'
 
 #### Recommended: Read-only dashboard access
@@ -87,7 +88,7 @@ Set (example):
 
 ```bash
 export DATABASE_URL_READONLY='postgresql://provity_ro:provity_ro@localhost:5432/provity'
-```
+````
 
 Create the read-only user inside the Docker Postgres (one-time):
 
@@ -109,7 +110,8 @@ SQL
 ```
 
 Security note: it is recommended to **avoid exposing Postgres (5432) to the public internet**.
-```
+
+````
 
 ## Run
 
@@ -117,7 +119,7 @@ From the project root, launch Streamlit (system Python):
 
 ```bash
 python3 -m streamlit run app.py
-```
+````
 
 The app starts a local web UI.
 
@@ -128,7 +130,10 @@ The app starts a local web UI.
 
 1. The uploaded file is written to a temporary location.
 2. Signature check: `osslsigncode verify -CAfile /etc/ssl/certs/ca-certificates.crt -in <file>`; reports validity and signer CN if present.
-3. Malware scan: `clamscan --no-summary <file>`; returns clean, infected with name, or engine error.
+3. Threat scan: `clamscan --no-summary <file>`; returns clean, infected with name, or engine error.
+
+- Provity also attempts to enable additional ClamAV alerts (PUA/phishing/macro/encrypted/broken) and falls back automatically if the installed clamscan does not support some options.
+
 4. Static analysis: `strings -n 6 <file>`; scans extracted text for IPs, URLs, common shell commands, and registry references, keeping up to five hits per category.
 5. Risk summary: computes a score and level (Low/Medium/High) with evidence based on the three checks.
 6. Temporary file is deleted after processing.

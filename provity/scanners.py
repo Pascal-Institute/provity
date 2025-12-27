@@ -244,29 +244,191 @@ def _contains_any(text: str, needles: list[str]) -> bool:
     return any(n.lower() in lowered for n in needles)
 
 
-def scan_virus_clamav(file_path: str) -> tuple[bool | None, str, str]:
-    """Local virus scan using ClamAV (clamscan)."""
+def scan_virus_clamav(file_path: str, *, enable_extended: bool = True) -> tuple[bool | None, str, str]:
+    """Local threat scan using ClamAV (clamscan).
+
+    Historically this function only reported "malware". It now best-effort enables
+    extra ClamAV detections (PUA/phishing/macro/encrypted/broken) when the local
+    clamscan supports them, while preserving the original return type.
+
+    Returns:
+      - (True,  "Clean", <stdout>) when no threats are detected
+      - (False, <label>,  <stdout>) when threats are detected
+      - (None,  <label>,  <stderr/diagnostic>) on scanner errors
+    """
+    detail = scan_threats_clamav(file_path, recursive=False, enable_extended=enable_extended)
+    return detail.get("state"), str(detail.get("label")), str(detail.get("raw_log"))
+
+
+def scan_threats_clamav(
+    file_path: str,
+    *,
+    recursive: bool = False,
+    enable_extended: bool = True,
+    timeout_sec: int = 120,
+) -> dict[str, Any]:
+    """Run ClamAV scan with best-effort extra checks.
+
+    This expands beyond classic malware signatures and can surface:
+      - PUA (potentially unwanted applications)
+      - phishing signatures
+      - macro alerts
+      - encrypted content alerts
+      - broken file alerts
+
+    Since clamscan options vary across versions/builds, we attempt an extended
+    flag set and fall back to a minimal scan if clamscan rejects unknown flags.
+
+    Output schema (stable for UI/DB):
+      - state: True/False/None
+      - label: short summary label ("Clean" or a categorized signature name)
+      - findings: list of {path, signature, category}
+      - flags: list of flags used
+      - raw_log: combined stdout/stderr for display/debug
+    """
+
+    def _parse_findings(stdout: str) -> list[dict[str, str]]:
+        findings: list[dict[str, str]] = []
+        for line in (stdout or "").splitlines():
+            if not line.strip().endswith("FOUND"):
+                continue
+            # Typical format: "/path/file: Signature.Name FOUND"
+            try:
+                left, _ = line.rsplit("FOUND", 1)
+                if ":" not in left:
+                    continue
+                p, sig = left.split(":", 1)
+                path_s = p.strip()
+                sig_s = sig.strip()
+                if not path_s or not sig_s:
+                    continue
+                findings.append(
+                    {
+                        "path": path_s,
+                        "signature": sig_s,
+                        "category": _categorize_clamav_signature(sig_s),
+                    }
+                )
+            except Exception:
+                continue
+        return findings
+
+    def _run(flags: list[str]) -> tuple[int, str, str]:
+        cmd = ["clamscan", *flags, file_path]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+        return proc.returncode, (proc.stdout or ""), (proc.stderr or "")
+
+    base_flags = ["--no-summary"]
+    if recursive:
+        base_flags.insert(0, "-r")
+
+    # Extended checks: keep these conservative; unsupported flags are handled by fallback.
+    extended_flags = [
+        *base_flags,
+        "--detect-pua=yes",
+        "--detect-structured=yes",
+        "--alert-macros=yes",
+        "--alert-encrypted=yes",
+        "--alert-broken=yes",
+        "--alert-phishing-ssl=yes",
+        "--alert-phishing-cloak=yes",
+    ]
+
     try:
-        cmd = ["clamscan", "--no-summary", file_path]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        flags_to_try = extended_flags if enable_extended else base_flags
+        returncode, stdout, stderr = _run(flags_to_try)
+        combined = (stdout or "") + ("\n" if stdout and stderr else "") + (stderr or "")
 
-        if result.returncode == 0:
-            return True, "Clean", result.stdout
-        if result.returncode == 1:
-            virus_name = "Unknown Malware"
-            if "FOUND" in (result.stdout or ""):
-                parts = result.stdout.split("FOUND")
-                if len(parts) > 0:
-                    raw_name = parts[0].split(":")[-1].strip()
-                    virus_name = raw_name
-            return False, virus_name, result.stdout
+        # Some clamscan builds return 2 + "Unknown option" when flags aren't supported.
+        lowered = combined.lower()
+        if enable_extended and returncode == 2 and (
+            "unknown option" in lowered
+            or "unrecognized option" in lowered
+            or "can't parse option" in lowered
+            or "invalid option" in lowered
+        ):
+            returncode, stdout, stderr = _run(base_flags)
+            combined = (stdout or "") + ("\n" if stdout and stderr else "") + (stderr or "")
+            used_flags = base_flags
+        else:
+            used_flags = flags_to_try
 
-        return None, "Engine Error", result.stderr
+        if returncode == 0:
+            return {
+                "state": True,
+                "label": "Clean",
+                "findings": [],
+                "flags": used_flags,
+                "raw_log": combined.strip(),
+            }
+
+        if returncode == 1:
+            findings = _parse_findings(stdout)
+            label = "Threat Detected"
+            if findings:
+                f0 = findings[0]
+                label = f"{f0.get('category', 'Threat')}: {f0.get('signature', 'Unknown')}"
+            return {
+                "state": False,
+                "label": label,
+                "findings": findings,
+                "flags": used_flags,
+                "raw_log": combined.strip(),
+            }
+
+        # returncode 2 or other non-standard values
+        return {
+            "state": None,
+            "label": "Engine Error",
+            "findings": [],
+            "flags": used_flags,
+            "raw_log": combined.strip(),
+        }
 
     except FileNotFoundError:
-        return None, "ClamAV (clamscan) is not installed.", ""
+        return {
+            "state": None,
+            "label": "ClamAV (clamscan) is not installed.",
+            "findings": [],
+            "flags": [],
+            "raw_log": "",
+        }
     except subprocess.TimeoutExpired:
-        return None, "Scan Timeout", "ClamAV scan timed out."
+        return {
+            "state": None,
+            "label": "Scan Timeout",
+            "findings": [],
+            "flags": extended_flags if enable_extended else base_flags,
+            "raw_log": "ClamAV scan timed out.",
+        }
+
+
+def _categorize_clamav_signature(signature: str) -> str:
+    s = (signature or "").strip().lower()
+    if not s:
+        return "Threat"
+
+    # PUA
+    if s.startswith("pua.") or "pua" in s:
+        return "PUA"
+
+    # Phishing
+    if "phish" in s:
+        return "Phishing"
+
+    # Macro / documents
+    if "macro" in s:
+        return "Macro"
+
+    # Encrypted content
+    if "encrypt" in s:
+        return "Encrypted"
+
+    # Heuristics / broken / limits
+    if s.startswith("heuristics.") or "heuristic" in s or "broken" in s or "exceed" in s:
+        return "Heuristic"
+
+    return "Malware"
 
 
 def static_analysis(file_path: str) -> dict[str, list[str]]:
@@ -294,7 +456,7 @@ def static_analysis(file_path: str) -> dict[str, list[str]]:
         return {}
 
 
-def scan_deb_package(file_path: str) -> dict[str, Any]:
+def scan_deb_package(file_path: str, *, enable_extended: bool = True) -> dict[str, Any]:
     """Specialized handling for Debian packages (.deb).
 
     Returns a dict with keys:
@@ -363,29 +525,19 @@ def scan_deb_package(file_path: str) -> dict[str, Any]:
     # 3) ClamAV: scan the .deb file and (if extracted) the extracted tree recursively
     try:
         # First scan the .deb file itself
-        clam_deb = scan_virus_clamav(file_path)
-        # Then, if extracted, run recursive clamscan on extract_dir
-        if extracted_ok and shutil.which("clamscan"):
-            cmd = ["clamscan", "-r", "--no-summary", str(extract_dir)]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if proc.returncode == 0:
-                # clean
-                clam_tree = (True, "Clean", proc.stdout)
-            elif proc.returncode == 1:
-                # infected
-                label = "Unknown Malware"
-                stdout = proc.stdout or ""
-                if "FOUND" in stdout:
-                    # best-effort parse
-                    parts = stdout.split("FOUND")
-                    if len(parts) > 0:
-                        raw_name = parts[0].split(":")[-1].strip()
-                        label = raw_name
-                clam_tree = (False, label, proc.stdout)
-            else:
-                clam_tree = (None, "Engine Error", proc.stderr)
+        clam_deb = scan_virus_clamav(file_path, enable_extended=enable_extended)
 
-            # Prefer tree result if it found malware, else fallback to single-file result
+        # Then, if extracted, scan the extracted tree recursively.
+        if extracted_ok and shutil.which("clamscan"):
+            tree_detail = scan_threats_clamav(
+                str(extract_dir),
+                recursive=True,
+                enable_extended=enable_extended,
+                timeout_sec=300,
+            )
+            clam_tree = (tree_detail.get("state"), str(tree_detail.get("label")), str(tree_detail.get("raw_log")))
+
+            # Prefer tree result if it found threats, else fallback to single-file result
             if clam_tree[0] is False:
                 result["clam_result"] = clam_tree
             else:
