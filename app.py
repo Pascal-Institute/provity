@@ -481,7 +481,7 @@ with tab_dashboard:
                 header[1].markdown("**Signature**")
                 header[2].markdown("**Risk**")
                 header[3].markdown("**Score**")
-                header[4].markdown("**User**")
+                header[4].markdown("**Verifier**")
                 header[5].markdown("**Scanned at**")
                 header[6].markdown("**File**")
                 st.divider()
