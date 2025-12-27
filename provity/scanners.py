@@ -257,7 +257,19 @@ def scan_virus_clamav(file_path: str, *, enable_extended: bool = True) -> tuple[
       - (None,  <label>,  <stderr/diagnostic>) on scanner errors
     """
     detail = scan_threats_clamav(file_path, recursive=False, enable_extended=enable_extended)
-    return detail.get("state"), str(detail.get("label")), str(detail.get("raw_log"))
+    raw_log = str(detail.get("raw_log"))
+
+    # Debug aid: show which flags were actually used (helps diagnose silent fallbacks).
+    if os.getenv("PROVITY_DEBUG_CLAMAV") == "1":
+        try:
+            used_flags = detail.get("flags") or []
+            flags_str = " ".join(str(x) for x in used_flags)
+            header = f"[provity] clamav_extended_requested={bool(enable_extended)}\n[provity] clamscan_flags={flags_str}\n"
+            raw_log = header + (raw_log or "")
+        except Exception:
+            pass
+
+    return detail.get("state"), str(detail.get("label")), raw_log
 
 
 def scan_threats_clamav(
@@ -323,13 +335,19 @@ def scan_threats_clamav(
         base_flags.insert(0, "-r")
 
     # Extended checks: keep these conservative; unsupported flags are handled by fallback.
+    # NOTE: option availability varies across ClamAV builds. This list is aligned with
+    # common Ubuntu clamscan options (see `clamscan --help`).
     extended_flags = [
         *base_flags,
         "--detect-pua=yes",
-        "--detect-structured=yes",
+        "--phishing-sigs=yes",
+        "--phishing-scan-urls=yes",
+        "--heuristic-alerts=yes",
         "--alert-macros=yes",
         "--alert-encrypted=yes",
         "--alert-broken=yes",
+        "--alert-broken-media=yes",
+        "--alert-exceeds-max=yes",
         "--alert-phishing-ssl=yes",
         "--alert-phishing-cloak=yes",
     ]
