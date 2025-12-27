@@ -11,6 +11,7 @@ import base64
 from provity.risk import compute_risk_assessment
 from provity.scanners import (
     scan_virus_clamav,
+    scan_threats_clamav,
     static_analysis,
     verify_signature_detailed,
     scan_deb_package,
@@ -332,7 +333,7 @@ st.title("🛡️ Provity : Trustured Software Validator")
 st.markdown("""
 **Without external network connections**, this tool performs security checks using local server resources.
 1. **Signature Verification**: `osslsigncode` (Authenticode)
-2. **Virus Scan**: `ClamAV` (Local Antivirus Engine)
+2. **Threat Scan**: `ClamAV` (Local Antivirus Engine)
 3. **Static Analysis**: `strings` (Suspicious IOC Extraction)
 """)
 
@@ -544,19 +545,65 @@ with tab_scan:
             # ClamAV Scan
             if is_deb and deb_scan is not None:
                 is_clean, virus_name, scan_log = deb_scan.get("clam_result", (None, "ClamAV not run", ""))
+                clam_detail = deb_scan.get("clam_detail")
             else:
                 with st.spinner("Scanning threats (ClamAV)..."):
-                    is_clean, virus_name, scan_log = scan_virus_clamav(tmp_path, enable_extended=bool(clamav_extended))
+                    clam_detail = scan_threats_clamav(tmp_path, enable_extended=bool(clamav_extended), recursive=False)
+                    is_clean = clam_detail.get("state")
+                    virus_name = clam_detail.get("label")
+                    scan_log = clam_detail.get("raw_log")
 
         if is_clean is True:
-            st.success("✅ Clean (No Malware Detected)")
-            st.caption("Safe according to ClamAV engine scan results.")
+            st.success("✅ Clean (No Threats Detected)")
+            st.caption("No threats detected by ClamAV for the enabled checks.")
         elif is_clean is False:
             st.error(f"🚫 Threat Detected: {virus_name}")
-            st.caption("ClamAV engine detected a security threat (malware/PUA/phishing/etc.).")
+            if isinstance(virus_name, str) and ":" in virus_name:
+                st.caption("ClamAV detected a categorized threat (e.g., PUA/Phishing/Macro/Heuristic).")
+            else:
+                st.caption("ClamAV detected a security threat.")
         else:
             st.warning("⚠️ Scanner Error")
             st.write(scan_log)
+
+        with st.expander("ClamAV Scan Details"):
+            requested = None
+            effective = None
+            used_flags = None
+            fallback_reason = None
+            if isinstance(clam_detail, dict):
+                requested = clam_detail.get("extended_requested")
+                effective = clam_detail.get("extended_effective")
+                used_flags = clam_detail.get("flags")
+                fallback_reason = clam_detail.get("fallback_reason")
+
+            st.write(f"**Extended checks requested:** {requested if requested is not None else 'Unknown'}")
+            st.write(f"**Extended checks effective:** {effective if effective is not None else 'Unknown'}")
+            if fallback_reason:
+                st.warning(str(fallback_reason))
+
+            # Step-by-step: show which classes of checks are enabled based on flags.
+            flag_set = set(str(x) for x in (used_flags or []))
+            steps = [
+                ("Base scan", True),
+                ("PUA detection", any("--detect-pua" in f for f in flag_set)),
+                ("Phishing signatures", any("--phishing-sigs" in f for f in flag_set)),
+                ("Phishing URL scan", any("--phishing-scan-urls" in f for f in flag_set)),
+                ("Heuristic alerts", any("--heuristic-alerts" in f for f in flag_set)),
+                ("Macro alerts", any("--alert-macros" in f for f in flag_set)),
+                ("Encrypted content alerts", any("--alert-encrypted" in f for f in flag_set)),
+                ("Broken executable alerts", any("--alert-broken" in f for f in flag_set)),
+                ("Broken media alerts", any("--alert-broken-media" in f for f in flag_set)),
+                ("Exceeds-max alerts", any("--alert-exceeds-max" in f for f in flag_set)),
+                ("Phishing SSL alerts", any("--alert-phishing-ssl" in f for f in flag_set)),
+                ("Phishing cloak alerts", any("--alert-phishing-cloak" in f for f in flag_set)),
+            ]
+            for name, enabled in steps:
+                st.write(f"- {name}: {'ON' if enabled else 'OFF'}")
+
+            if used_flags:
+                st.caption("Flags used:")
+                st.code(" ".join(str(x) for x in used_flags), language="text")
 
         st.markdown("---")
 
@@ -625,6 +672,8 @@ with tab_scan:
                         "clam_label": virus_name,
                         "clam_category": (str(virus_name).split(":", 1)[0].strip() if isinstance(virus_name, str) and ":" in str(virus_name) else None),
                         "clam_extended_enabled": bool(clamav_extended),
+                        "clam_extended_effective": (bool(clam_detail.get("extended_effective")) if isinstance(clam_detail, dict) and clam_detail.get("extended_effective") is not None else None),
+                        "clam_flags": (" ".join(str(x) for x in (clam_detail.get("flags") or [])) if isinstance(clam_detail, dict) else None),
                     },
                 )
                 st.sidebar.success("Logged to DB")

@@ -291,12 +291,15 @@ def scan_threats_clamav(
     Since clamscan options vary across versions/builds, we attempt an extended
     flag set and fall back to a minimal scan if clamscan rejects unknown flags.
 
-    Output schema (stable for UI/DB):
-      - state: True/False/None
-      - label: short summary label ("Clean" or a categorized signature name)
-      - findings: list of {path, signature, category}
-      - flags: list of flags used
-      - raw_log: combined stdout/stderr for display/debug
+        Output schema (stable for UI/DB):
+            - state: True/False/None
+            - label: short summary label ("Clean" or a categorized signature name)
+            - findings: list of {path, signature, category}
+            - flags: list of flags used
+            - extended_requested: whether extended checks were requested
+            - extended_effective: whether extended flags were actually used
+            - fallback_reason: optional string explaining why we fell back
+            - raw_log: combined stdout/stderr for display/debug
     """
 
     def _parse_findings(stdout: str) -> list[dict[str, str]]:
@@ -359,6 +362,8 @@ def scan_threats_clamav(
 
         # Some clamscan builds return 2 + "Unknown option" when flags aren't supported.
         lowered = combined.lower()
+        fallback_reason = None
+
         if enable_extended and returncode == 2 and (
             "unknown option" in lowered
             or "unrecognized option" in lowered
@@ -368,8 +373,11 @@ def scan_threats_clamav(
             returncode, stdout, stderr = _run(base_flags)
             combined = (stdout or "") + ("\n" if stdout and stderr else "") + (stderr or "")
             used_flags = base_flags
+            fallback_reason = "Extended flags not supported by this clamscan build; fell back to base scan."
         else:
             used_flags = flags_to_try
+
+        extended_effective = bool(enable_extended) and (used_flags != base_flags)
 
         if returncode == 0:
             return {
@@ -377,6 +385,9 @@ def scan_threats_clamav(
                 "label": "Clean",
                 "findings": [],
                 "flags": used_flags,
+                "extended_requested": bool(enable_extended),
+                "extended_effective": extended_effective,
+                "fallback_reason": fallback_reason,
                 "raw_log": combined.strip(),
             }
 
@@ -391,6 +402,9 @@ def scan_threats_clamav(
                 "label": label,
                 "findings": findings,
                 "flags": used_flags,
+                "extended_requested": bool(enable_extended),
+                "extended_effective": extended_effective,
+                "fallback_reason": fallback_reason,
                 "raw_log": combined.strip(),
             }
 
@@ -400,6 +414,9 @@ def scan_threats_clamav(
             "label": "Engine Error",
             "findings": [],
             "flags": used_flags,
+            "extended_requested": bool(enable_extended),
+            "extended_effective": extended_effective,
+            "fallback_reason": fallback_reason,
             "raw_log": combined.strip(),
         }
 
@@ -409,6 +426,9 @@ def scan_threats_clamav(
             "label": "ClamAV (clamscan) is not installed.",
             "findings": [],
             "flags": [],
+            "extended_requested": bool(enable_extended),
+            "extended_effective": False,
+            "fallback_reason": None,
             "raw_log": "",
         }
     except subprocess.TimeoutExpired:
@@ -417,6 +437,9 @@ def scan_threats_clamav(
             "label": "Scan Timeout",
             "findings": [],
             "flags": extended_flags if enable_extended else base_flags,
+            "extended_requested": bool(enable_extended),
+            "extended_effective": bool(enable_extended),
+            "fallback_reason": None,
             "raw_log": "ClamAV scan timed out.",
         }
 
@@ -488,6 +511,7 @@ def scan_deb_package(file_path: str, *, enable_extended: bool = True) -> dict[st
     result: dict[str, Any] = {
         "sig_detail": {"backend": "dpkg-sig", "valid": False, "raw_log": "Not checked"},
         "clam_result": (None, "ClamAV not run", ""),
+        "clam_detail": None,
         "artifacts": {},
     }
 
@@ -544,6 +568,7 @@ def scan_deb_package(file_path: str, *, enable_extended: bool = True) -> dict[st
     try:
         # First scan the .deb file itself
         clam_deb = scan_virus_clamav(file_path, enable_extended=enable_extended)
+        deb_detail = scan_threats_clamav(file_path, recursive=False, enable_extended=enable_extended, timeout_sec=120)
 
         # Then, if extracted, scan the extracted tree recursively.
         if extracted_ok and shutil.which("clamscan"):
@@ -558,10 +583,13 @@ def scan_deb_package(file_path: str, *, enable_extended: bool = True) -> dict[st
             # Prefer tree result if it found threats, else fallback to single-file result
             if clam_tree[0] is False:
                 result["clam_result"] = clam_tree
+                result["clam_detail"] = tree_detail
             else:
                 result["clam_result"] = clam_deb
+                result["clam_detail"] = deb_detail
         else:
             result["clam_result"] = clam_deb
+            result["clam_detail"] = deb_detail
     except subprocess.TimeoutExpired:
         result["clam_result"] = (None, "Scan Timeout", "ClamAV scan timed out")
     except Exception:
