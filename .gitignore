@@ -17,4 +17,7 @@ pgdata/
 .env
 
 # Local helper scripts (debug/one-off)
+# Keep the directory ignored by default, but allow the deployment script
+# used by GitHub Actions.
 scripts/
+!scripts/deploy_server.sh
