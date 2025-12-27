@@ -1,0 +1,3 @@
+[server]
+# Max upload size in megabytes
+maxUploadSize = 300
