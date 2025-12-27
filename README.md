@@ -156,18 +156,18 @@ python3 -m pytest -q
 
 If PC1 can be reached by SSH from GitHub Actions, you can auto-deploy on every push to `main`.
 
-- Workflow: `.github/workflows/deploy_pc1.yml`
+- Workflow: `.github/workflows/deploy_server.yml`
 - Remote script: `scripts/deploy_pc1.sh` (runs `git fetch/reset`, installs deps, and restarts Streamlit)
 
 ### GitHub repo secrets required
 
 Configure these repository secrets:
 
-- `PC1_HOST`: PC1 public hostname/IP
-- `PC1_PORT`: SSH port (e.g. `22`)
-- `PC1_USER`: SSH username
-- `PC1_SSH_KEY`: private key (PEM) for SSH auth
-- `PC1_PROVITY_DIR`: absolute path to the repo on PC1 (e.g. `/home/provity/provity`)
+- `DEPLOY_HOST`: Server public hostname/IP
+- `DEPLOY_PORT`: SSH port (e.g. `22`)
+- `DEPLOY_USER`: SSH username
+- `DEPLOY_SSH_KEY`: private key (PEM) for SSH auth
+- `DEPLOY_PROVITY_DIR`: absolute path to the repo on the server (e.g. `/home/pascal/provity`)
 
 ### Recommended: systemd
 
