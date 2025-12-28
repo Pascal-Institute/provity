@@ -511,20 +511,27 @@ with tab_scan:
 
 with tab_verify:
     st.subheader("Verify Attestation")
-    st.caption("Upload an attestation JSON and the original file to verify signature + file binding.")
+    st.caption("Upload issuer public key (PEM), attestation JSON, and the original file.")
 
     if _ATTEST_IMPORT_ERROR:
         st.error(f"Attestation features unavailable: {_ATTEST_IMPORT_ERROR}")
     else:
+        pubkey_file = st.file_uploader(
+            "Issuer public key (PEM)",
+            type=["pem"],
+            key="attestation_verify_pubkey",
+            help="Use the PEM exported from the Scan tab (or a pinned issuer public key distributed by your org).",
+        )
         att_file = st.file_uploader("Attestation file (JSON)", type=["json"], key="attestation_verify")
         orig_file = st.file_uploader("Original file", key="attestation_verify_file")
 
-        if att_file is None or orig_file is None:
-            st.info("Upload both files to verify.")
+        if pubkey_file is None or att_file is None or orig_file is None:
+            st.info("Upload public key (PEM), attestation JSON, and the original file to verify.")
         else:
             try:
                 att_obj = parse_attestation_json(att_file.getvalue())
-                result = verify_attestation(att_obj, file_bytes=orig_file.getvalue())
+                pubkey_pem = pubkey_file.getvalue().decode("utf-8", errors="replace")
+                result = verify_attestation(att_obj, file_bytes=orig_file.getvalue(), public_key_pem=pubkey_pem)
 
                 if result.get("ok") is True:
                     st.success("✅ Attestation verified")

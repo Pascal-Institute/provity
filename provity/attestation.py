@@ -250,7 +250,7 @@ def verify_attestation(
     attestation: dict[str, Any],
     *,
     file_bytes: bytes,
-    public_key_pem: str | None = None,
+    public_key_pem: str | None,
 ) -> dict[str, Any]:
     """Verify an attestation and its binding to the provided file bytes.
 
@@ -293,16 +293,11 @@ def verify_attestation(
             "actual_sha256": actual_sha256,
         }
 
-    # Public key: prefer explicit input, then embedded, then local default.
+    # Public key MUST be provided by the verifier (pinned trust anchor).
+    # We intentionally do NOT trust embedded keys in the attestation.
     pk_pem = public_key_pem
-    if not pk_pem:
-        embedded = sig_block.get("public_key_pem")
-        if isinstance(embedded, str) and embedded.strip():
-            pk_pem = embedded
-
-    if not pk_pem:
-        _, pub, _ = ensure_keypair()
-        pk_pem = public_key_pem_bytes(pub).decode("utf-8")
+    if not pk_pem or not str(pk_pem).strip():
+        return {"ok": False, "reason": "Missing issuer public key (PEM)."}
 
     try:
         pub_key = serialization.load_pem_public_key(pk_pem.encode("utf-8"))

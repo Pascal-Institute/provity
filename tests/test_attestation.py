@@ -7,6 +7,7 @@ from provity.attestation import (
     canonical_json_bytes,
     ensure_keypair,
     parse_attestation_json,
+    public_key_pem_bytes,
     sha256_bytes,
     verify_attestation,
 )
@@ -14,6 +15,7 @@ from provity.attestation import (
 
 def test_attestation_roundtrip_ok(tmp_path):
     priv, pub, key_id = ensure_keypair(tmp_path)
+    pub_pem = public_key_pem_bytes(pub).decode("utf-8")
 
     file_bytes = b"hello-provity"
     payload = {
@@ -28,7 +30,7 @@ def test_attestation_roundtrip_ok(tmp_path):
     assert att["version"] == ATTESTATION_VERSION
     assert "signature" in att
 
-    res = verify_attestation(att, file_bytes=file_bytes)
+    res = verify_attestation(att, file_bytes=file_bytes, public_key_pem=pub_pem)
     assert res["ok"] is True
     assert res["key_id"] == key_id
     assert res["actual_sha256"] == sha256_bytes(file_bytes)
@@ -36,6 +38,7 @@ def test_attestation_roundtrip_ok(tmp_path):
 
 def test_attestation_tamper_fails(tmp_path):
     priv, pub, _ = ensure_keypair(tmp_path)
+    pub_pem = public_key_pem_bytes(pub).decode("utf-8")
 
     file_bytes = b"hello-provity"
     payload = {
@@ -50,13 +53,14 @@ def test_attestation_tamper_fails(tmp_path):
     # Tamper payload after signing
     att["payload"]["risk"]["score"] = 99
 
-    res = verify_attestation(att, file_bytes=file_bytes)
+    res = verify_attestation(att, file_bytes=file_bytes, public_key_pem=pub_pem)
     assert res["ok"] is False
     assert res["reason"] == "Signature verification failed"
 
 
 def test_attestation_file_hash_mismatch_fails(tmp_path):
     priv, pub, _ = ensure_keypair(tmp_path)
+    pub_pem = public_key_pem_bytes(pub).decode("utf-8")
 
     payload = {
         "type": "provity.scan",
@@ -66,10 +70,27 @@ def test_attestation_file_hash_mismatch_fails(tmp_path):
     }
 
     att = build_attestation(payload, private_key=priv, public_key=pub)
-    res = verify_attestation(att, file_bytes=b"B")
+    res = verify_attestation(att, file_bytes=b"B", public_key_pem=pub_pem)
 
     assert res["ok"] is False
     assert res["reason"] == "File hash mismatch"
+
+
+def test_attestation_missing_pubkey_fails(tmp_path):
+    priv, pub, _ = ensure_keypair(tmp_path)
+
+    file_bytes = b"hello-provity"
+    payload = {
+        "type": "provity.scan",
+        "scanned_at": "2025-01-01T00:00:00Z",
+        "file": {"original_filename": "sample.exe", "sha256": sha256_bytes(file_bytes), "is_deb": False},
+        "risk": {"score": 10, "level": "Low", "evidence": ["ok"]},
+    }
+
+    att = build_attestation(payload, private_key=priv, public_key=pub)
+    res = verify_attestation(att, file_bytes=file_bytes, public_key_pem=None)
+    assert res["ok"] is False
+    assert res["reason"] == "Missing issuer public key (PEM)."
 
 
 def test_parse_attestation_json(tmp_path):
