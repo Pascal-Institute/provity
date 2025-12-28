@@ -524,8 +524,8 @@ with tab_scan:
             dyn_timeout = st.number_input(
                 "Dynamic scan runtime (seconds)",
                 min_value=5,
-                max_value=300,
-                value=20,
+                max_value=600,
+                value=60,
                 step=5,
                 key="dyn_timeout_sec",
             )

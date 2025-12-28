@@ -8,6 +8,8 @@ import uuid
 from typing import Any
 from multiprocessing import Process, Queue
 
+import signal
+
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
@@ -370,13 +372,33 @@ def _speakeasy_worker(*, sample_path: str, result_q: Queue) -> None:
         from speakeasy import Speakeasy  # type: ignore
 
         se = Speakeasy()
-        module = se.load_module(sample_path)
-        se.run_module(module)
+
+        def _alarm_handler(_signum: int, _frame: Any) -> None:  # pragma: no cover
+            raise TimeoutError("emulation timeout")
+
+        # Best-effort graceful timeout so we can still return a partial report.
+        # The parent process still enforces a hard timeout as a safety net.
+        alarm_sec_env = os.getenv("SANDBOX_EMULATE_ALARM_SEC")
+        alarm_sec = int(alarm_sec_env) if (alarm_sec_env and alarm_sec_env.isdigit()) else 0
+        if alarm_sec > 0:
+            signal.signal(signal.SIGALRM, _alarm_handler)
+            signal.alarm(alarm_sec)
+
+        timed_out = False
+        try:
+            module = se.load_module(sample_path)
+            se.run_module(module)
+        except TimeoutError:
+            timed_out = True
+        finally:
+            if alarm_sec > 0:
+                signal.alarm(0)
+
         report = se.get_report()
         if not isinstance(report, dict):
             result_q.put({"ok": False, "reason": "invalid speakeasy report"})
             return
-        result_q.put({"ok": True, "report": report})
+        result_q.put({"ok": True, "report": report, "timed_out": timed_out})
     except Exception as e:
         result_q.put({"ok": False, "reason": f"emulation failed: {e}"})
 
@@ -391,10 +413,13 @@ def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, An
             f.write(raw)
 
         q: Queue = Queue(maxsize=1)
+        # Give the child a chance to stop gracefully at timeout_sec via SIGALRM,
+        # but keep a small hard-kill headroom to avoid hung workers.
+        os.environ.setdefault("SANDBOX_EMULATE_ALARM_SEC", str(int(timeout_sec)))
         p = Process(target=_speakeasy_worker, kwargs={"sample_path": sample_path, "result_q": q})
         start = time.time()
         p.start()
-        p.join(timeout=max(5, int(timeout_sec)))
+        p.join(timeout=max(5, int(timeout_sec) + 5))
 
         if p.is_alive():
             p.terminate()
@@ -446,6 +471,8 @@ def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, An
                 "elapsed_sec": int(time.time() - start),
             }
 
+        timed_out = bool(res.get("timed_out"))
+
         summary = _extract_suspicious_api_calls(report)
         hits = int(summary.get("suspicious_api_hits_count") or 0)
         api_calls_count = int(summary.get("api_calls_count") or 0)
@@ -462,14 +489,19 @@ def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, An
         return {
             "ok": True,
             "run_id": run_id,
-            "reason": "emulate",
+            "reason": "emulate" if not timed_out else "emulate (partial; timed out)",
             "elapsed_sec": int(time.time() - start),
             "verdict": verdict,
             "score": score,
             "detections": [],
             "emulation": {
                 **summary,
-                "notes": ["SANDBOX_MODE=emulate", "verdict derived from suspicious API usage"],
+                "timed_out": timed_out,
+                "notes": [
+                    "SANDBOX_MODE=emulate",
+                    "verdict derived from suspicious API usage",
+                    "increase runtime if frequently timing out",
+                ],
             },
         }
 
