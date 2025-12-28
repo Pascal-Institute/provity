@@ -455,20 +455,48 @@ def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, An
 
         res = q.get()
         if not isinstance(res, dict) or res.get("ok") is not True:
+            reason = str((res or {}).get("reason") or "emulation failed")
             return {
-                "ok": False,
+                "ok": True,
                 "run_id": run_id,
-                "reason": str((res or {}).get("reason") or "emulation failed"),
+                "reason": "emulate (failed)",
                 "elapsed_sec": int(time.time() - start),
+                "verdict": "unknown",
+                "score": 0,
+                "detections": [],
+                "emulation": {
+                    "timed_out": False,
+                    "failed": True,
+                    "error": reason,
+                    "api_calls_count": 0,
+                    "suspicious_api_hits": [],
+                    "suspicious_api_hits_count": 0,
+                    "notes": [
+                        "SANDBOX_MODE=emulate",
+                        "emulation failed; verdict is unknown",
+                    ],
+                },
             }
 
         report = res.get("report")
         if not isinstance(report, dict):
             return {
-                "ok": False,
+                "ok": True,
                 "run_id": run_id,
-                "reason": "invalid emulation report",
+                "reason": "emulate (invalid report)",
                 "elapsed_sec": int(time.time() - start),
+                "verdict": "unknown",
+                "score": 0,
+                "detections": [],
+                "emulation": {
+                    "timed_out": False,
+                    "failed": True,
+                    "error": "invalid emulation report",
+                    "api_calls_count": 0,
+                    "suspicious_api_hits": [],
+                    "suspicious_api_hits_count": 0,
+                    "notes": ["SANDBOX_MODE=emulate"],
+                },
             }
 
         timed_out = bool(res.get("timed_out"))

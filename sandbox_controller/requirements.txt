@@ -3,4 +3,4 @@ uvicorn[standard]>=0.27
 pywinrm>=0.4.3
 pydantic>=2.6
 speakeasy-emulator
-setuptools>=68
+setuptools>=68,<81
