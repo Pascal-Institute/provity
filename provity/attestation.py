@@ -10,12 +10,17 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+    from cryptography import x509
+    from cryptography.x509 import ocsp
 except Exception as e:  # pragma: no cover
     serialization = None  # type: ignore[assignment]
     Ed25519PrivateKey = None  # type: ignore[assignment]
     Ed25519PublicKey = None  # type: ignore[assignment]
+    hashes = None  # type: ignore[assignment]
+    x509 = None  # type: ignore[assignment]
+    ocsp = None  # type: ignore[assignment]
     _CRYPTO_IMPORT_ERROR = str(e)
 else:
     _CRYPTO_IMPORT_ERROR = None
@@ -23,6 +28,10 @@ else:
 
 ATTESTATION_SCHEMA = "provity.attestation"
 ATTESTATION_VERSION = 1
+
+# Default TSA (Time Stamping Authority) URL for RFC 3161 timestamps.
+# FreeTSA is a public, free TSA service. Override via PROVITY_TSA_URL env var.
+DEFAULT_TSA_URL = "http://freetsa.org/tsr"
 
 
 class AttestationError(RuntimeError):
@@ -172,14 +181,207 @@ def verify_payload_signature(
         return False
 
 
+def get_tsa_url() -> str:
+    """Get TSA URL from environment or default."""
+    return os.getenv("PROVITY_TSA_URL") or DEFAULT_TSA_URL
+
+
+def request_timestamp_token(
+    data: bytes,
+    *,
+    tsa_url: str | None = None,
+    timeout: int = 10,
+) -> dict[str, Any]:
+    """Request an RFC 3161 timestamp token for the given data.
+
+    Returns a dict with:
+      - ok: bool
+      - token_der: bytes (DER-encoded timestamp token) if ok=True
+      - tsa_url: str
+      - error: str (if ok=False)
+    """
+    _require_crypto()
+    tsa_url = tsa_url or get_tsa_url()
+
+    # Compute SHA-256 hash of the data (this is what we timestamp)
+    digest = hashlib.sha256(data).digest()
+
+    # Build RFC 3161 TimeStampReq (simplified: we use ASN.1 manually or rely on external lib)
+    # For production, use a proper RFC 3161 client library or call out to openssl.
+    # Here we do a minimal implementation using HTTP POST with DER-encoded request.
+
+    try:
+        import io
+        import urllib.request
+
+        # Minimal ASN.1 DER encoding for TimeStampReq (MessageImprint + request)
+        # This is a simplified approach; production should use a proper ASN.1 library.
+        # For now, we use openssl command-line as fallback or accept that this is best-effort.
+
+        # Actually, let's use a simpler approach: shell out to openssl ts command if available,
+        # or use the cryptography library's limited support.
+        # Since cryptography doesn't have full RFC 3161 client support built-in,
+        # we'll do a basic HTTP POST with a hand-crafted request.
+
+        # Minimal TimeStampReq DER structure (this is a simplified version):
+        # We'll construct the request manually or use openssl.
+
+        # For simplicity in this implementation, let's use subprocess + openssl:
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".dat") as f:
+            f.write(data)
+            data_path = f.name
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".tsq") as f:
+            tsq_path = f.name
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".tsr") as f:
+            tsr_path = f.name
+
+        try:
+            # Create timestamp query
+            subprocess.run(
+                ["openssl", "ts", "-query", "-data", data_path, "-sha256", "-out", tsq_path],
+                check=True,
+                capture_output=True,
+                timeout=5,
+            )
+
+            # Send request to TSA
+            with open(tsq_path, "rb") as f:
+                tsq_data = f.read()
+
+            req = urllib.request.Request(
+                tsa_url,
+                data=tsq_data,
+                headers={"Content-Type": "application/timestamp-query"},
+                method="POST",
+            )
+
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                tsr_data = response.read()
+
+            with open(tsr_path, "wb") as f:
+                f.write(tsr_data)
+
+            # Verify response is valid (basic check)
+            result = subprocess.run(
+                ["openssl", "ts", "-reply", "-in", tsr_path, "-text"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            if result.returncode != 0:
+                return {"ok": False, "tsa_url": tsa_url, "error": "Invalid TSA response"}
+
+            return {
+                "ok": True,
+                "token_der": tsr_data,
+                "tsa_url": tsa_url,
+            }
+
+        finally:
+            for p in [data_path, tsq_path, tsr_path]:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+    except FileNotFoundError:
+        return {"ok": False, "tsa_url": tsa_url, "error": "openssl not available"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "tsa_url": tsa_url, "error": "TSA request timed out"}
+    except Exception as e:
+        return {"ok": False, "tsa_url": tsa_url, "error": str(e)}
+
+
+def verify_timestamp_token(
+    data: bytes,
+    *,
+    token_der: bytes,
+    tsa_url: str,
+) -> dict[str, Any]:
+    """Verify an RFC 3161 timestamp token.
+
+    Returns dict with:
+      - ok: bool
+      - timestamp: str (ISO 8601) if ok=True
+      - error: str if ok=False
+    """
+    _require_crypto()
+
+    try:
+        import subprocess
+        import tempfile
+        import re
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".dat") as f:
+            f.write(data)
+            data_path = f.name
+
+        with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".tsr") as f:
+            f.write(token_der)
+            tsr_path = f.name
+
+        try:
+            # Verify timestamp token
+            result = subprocess.run(
+                ["openssl", "ts", "-verify", "-data", data_path, "-in", tsr_path, "-text"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+
+            output = result.stdout + result.stderr
+
+            if "Verification: OK" not in output:
+                return {"ok": False, "error": "Timestamp verification failed"}
+
+            # Extract timestamp from output
+            match = re.search(r"Time stamp: (.+)", output)
+            timestamp_str = match.group(1).strip() if match else "unknown"
+
+            return {
+                "ok": True,
+                "timestamp": timestamp_str,
+                "tsa_url": tsa_url,
+            }
+
+        finally:
+            for p in [data_path, tsr_path]:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+    except FileNotFoundError:
+        return {"ok": False, "error": "openssl not available"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def build_attestation(
     payload: dict[str, Any],
     *,
     private_key: Ed25519PrivateKey,
     public_key: Ed25519PublicKey,
+    use_timestamp: bool = False,
+    tsa_url: str | None = None,
 ) -> dict[str, Any]:
+    """Build a signed attestation, optionally with RFC 3161 timestamp.
+
+    Args:
+        payload: The attestation payload (scan results)
+        private_key: Ed25519 private key for signing
+        public_key: Corresponding public key
+        use_timestamp: If True, request RFC 3161 timestamp (requires network)
+        tsa_url: TSA URL override (default: PROVITY_TSA_URL or freetsa.org)
+    """
     sig = sign_payload(payload, private_key)
-    return {
+    attestation = {
         "schema": ATTESTATION_SCHEMA,
         "version": ATTESTATION_VERSION,
         "payload": payload,
@@ -191,6 +393,26 @@ def build_attestation(
             "sig_b64": base64.b64encode(sig).decode("ascii"),
         },
     }
+
+    # Optional: Add RFC 3161 timestamp
+    if use_timestamp:
+        canonical = canonical_json_bytes(payload)
+        ts_result = request_timestamp_token(canonical, tsa_url=tsa_url)
+        if ts_result.get("ok"):
+            attestation["timestamp"] = {
+                "tsa_url": ts_result["tsa_url"],
+                "token_der_b64": base64.b64encode(ts_result["token_der"]).decode("ascii"),
+            }
+        else:
+            # Timestamp request failed; include error but don't fail attestation
+            attestation["timestamp"] = {
+                "requested": True,
+                "ok": False,
+                "error": ts_result.get("error", "unknown"),
+                "tsa_url": ts_result.get("tsa_url", tsa_url or get_tsa_url()),
+            }
+
+    return attestation
 
 
 def build_scan_payload(
@@ -311,13 +533,34 @@ def verify_attestation(
     if not sig_ok:
         return {"ok": False, "reason": "Signature verification failed", "actual_sha256": actual_sha256}
 
-    return {
+    # Optional: Verify RFC 3161 timestamp if present
+    timestamp_info = attestation.get("timestamp")
+    timestamp_verified = None
+    timestamp_time = None
+    if isinstance(timestamp_info, dict) and timestamp_info.get("token_der_b64"):
+        try:
+            token_der = base64.b64decode(timestamp_info["token_der_b64"])
+            canonical = canonical_json_bytes(payload)
+            ts_result = verify_timestamp_token(canonical, token_der=token_der, tsa_url=timestamp_info.get("tsa_url", ""))
+            timestamp_verified = ts_result.get("ok")
+            timestamp_time = ts_result.get("timestamp")
+        except Exception:
+            timestamp_verified = False
+
+    result = {
         "ok": True,
         "reason": "OK",
         "actual_sha256": actual_sha256,
         "key_id": sig_block.get("key_id") or public_key_id(pub_key),
         "payload": payload,
     }
+
+    if timestamp_verified is not None:
+        result["timestamp_verified"] = timestamp_verified
+        if timestamp_time:
+            result["timestamp_time"] = timestamp_time
+
+    return result
 
 
 def parse_attestation_json(attestation_bytes: bytes) -> dict[str, Any]:

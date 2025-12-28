@@ -42,11 +42,24 @@ export PROVITY_ATTESTATION_DIR=/path/to/attestation
 
 Use the **Verify** tab:
 
-1. Upload the exported `attestation_*.json`
-2. Upload the original file that was scanned
-3. Provity verifies:
-   - The signature over the attestation payload
+1. Upload the issuer public key (PEM) - downloaded from the Scan tab
+2. Upload the exported `attestation_*.json`
+3. Upload the original file that was scanned
+4. Provity verifies:
+   - The signature over the attestation payload (using the pinned issuer public key)
    - The file SHA-256 matches the payload
+   - The RFC 3161 timestamp token (if present)
+
+### RFC 3161 Timestamps (optional)
+
+Attestations can include a **trusted timestamp** from an external Time Stamping Authority (TSA):
+
+- Enable via checkbox: "Request RFC 3161 timestamp (requires network)"
+- Proves **when** the scan was performed (cannot be backdated by the issuer)
+- Uses FreeTSA.org by default (override via `PROVITY_TSA_URL` environment variable)
+- Requires `openssl` command-line tool to be available on PATH
+
+Note: Timestamp requests require brief network access to the TSA. If offline or if the request fails, the attestation is still generated (without timestamp).
 
 ## Requirements
 
@@ -56,6 +69,7 @@ Use the **Verify** tab:
   - `osslsigncode`
   - `clamscan` (ClamAV)
   - `strings` (from binutils or equivalent)
+  - `openssl` (for RFC 3161 timestamp requests/verification)
 - Optional (for .deb signature checks): `dpkg-deb` and `dpkg-sig`.
 - CA certificates bundle readable at `/etc/ssl/certs/ca-certificates.crt` for signature validation (adjust the path in `verify_signature` if your system differs).
 
