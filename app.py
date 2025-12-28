@@ -426,7 +426,7 @@ with tab_scan:
         else:
             use_timestamp = st.checkbox(
                 "Request RFC 3161 timestamp (requires network)",
-                value=False,
+                value=True,
                 help="Obtain a trusted timestamp from an external TSA (Time Stamping Authority). This proves when the scan was performed.",
             )
             try:
