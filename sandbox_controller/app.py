@@ -400,10 +400,24 @@ def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, An
             p.terminate()
             p.join(timeout=2)
             return {
-                "ok": False,
+                "ok": True,
                 "run_id": run_id,
                 "reason": "emulation timeout",
                 "elapsed_sec": int(time.time() - start),
+                "verdict": "suspicious",
+                "score": 25,
+                "detections": [],
+                "emulation": {
+                    "timed_out": True,
+                    "api_calls_count": 0,
+                    "suspicious_api_hits": [],
+                    "suspicious_api_hits_count": 0,
+                    "notes": [
+                        "SANDBOX_MODE=emulate",
+                        "emulation timed out; verdict is conservative",
+                        "try increasing Dynamic scan runtime",
+                    ],
+                },
             }
 
         if q.empty():
