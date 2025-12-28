@@ -523,6 +523,13 @@ with tab_scan:
 
 
 with tab_verify:
+    # ============================================================================
+    # VERIFY TAB: NO DATABASE LOGGING
+    # This tab performs read-only verification of attestations.
+    # It does NOT call insert_scan_event() or write to the database.
+    # All file uploads here are temporary and only used for verification.
+    # ============================================================================
+    
     st.subheader("Verify Attestation")
     st.caption("Upload attestation JSON and the original file. Public key (PEM) is optional if using the same Provity instance.")
 
