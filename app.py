@@ -85,6 +85,134 @@ def _guess_app_name(original_filename: str) -> str:
         safe = name[:80]
         return safe
 
+
+def _render_attestation_section(
+    *,
+    uploaded_filename: str,
+    file_hash: str,
+    is_deb: bool,
+    sig_detail: dict,
+    sig_valid: bool,
+    sig_info: dict,
+    clam_detail: dict | None,
+    clam_state: bool | None,
+    clam_label: str,
+    artifacts: dict,
+    risk_score: int,
+    risk_level: str,
+    risk_evidence: list,
+) -> None:
+    st.markdown("---")
+    st.subheader("Attestation (Signed Scan Result)")
+    if _ATTEST_IMPORT_ERROR:
+        st.warning(f"Attestation unavailable: {_ATTEST_IMPORT_ERROR}")
+        return
+
+    try:
+        priv, pub, key_id = ensure_keypair()
+        payload = build_scan_payload(
+            original_filename=uploaded_filename,
+            file_sha256=file_hash,
+            is_deb=bool(is_deb),
+            sig_detail=sig_detail,
+            sig_valid=bool(sig_valid),
+            sig_info=sig_info if isinstance(sig_info, dict) else {},
+            clam_detail=clam_detail if isinstance(clam_detail, dict) else None,
+            clam_state=clam_state,
+            clam_label=str(clam_label or ""),
+            artifacts=artifacts,
+            risk_score=int(risk_score),
+            risk_level=str(risk_level),
+            risk_evidence=list(risk_evidence),
+        )
+        attestation = build_attestation(payload, private_key=priv, public_key=pub)
+
+        att_bytes = json.dumps(attestation, indent=2, ensure_ascii=False).encode("utf-8")
+        pub_key_pem = attestation.get("signature", {}).get("public_key_pem", "")
+
+        c1, c2 = st.columns([1.2, 1.0])
+        with c1:
+            st.download_button(
+                "Download attestation.json",
+                data=att_bytes,
+                file_name=f"attestation_{file_hash[:12]}.json",
+                mime="application/json",
+            )
+            st.caption(f"Signed with key id: {key_id}")
+        with c2:
+            if isinstance(pub_key_pem, str) and pub_key_pem.strip():
+                st.download_button(
+                    "Download public key (PEM)",
+                    data=pub_key_pem.encode("utf-8"),
+                    file_name=f"provity_attestation_pubkey_{key_id}.pem",
+                    mime="application/x-pem-file",
+                )
+
+        with st.expander("Attestation preview"):
+            st.json(attestation)
+    except AttestationError as e:
+        st.error(str(e))
+    except Exception as e:
+        st.error(f"Failed to build attestation: {e}")
+
+
+def _render_verify_attestation_tab() -> None:
+    # ============================================================================
+    # VERIFY TAB: NO DATABASE LOGGING
+    # This tab performs read-only verification of attestations.
+    # It does NOT call insert_scan_event() or write to the database.
+    # All file uploads here are temporary and only used for verification.
+    # ============================================================================
+
+    st.subheader("Verify Attestation")
+    st.caption(
+        "Upload attestation JSON and the original file. Public key (PEM) is optional if using the same Provity instance."
+    )
+
+    if _ATTEST_IMPORT_ERROR:
+        st.error(f"Attestation features unavailable: {_ATTEST_IMPORT_ERROR}")
+        return
+
+    pubkey_file = st.file_uploader(
+        "Issuer public key (PEM) - optional",
+        type=["pem"],
+        key="attestation_verify_pubkey",
+        help="Optional. If not provided, uses local trusted issuer key (same Provity instance).",
+    )
+    att_file = st.file_uploader("Attestation file (JSON)", type=["json"], key="attestation_verify")
+    orig_file = st.file_uploader("Original file", key="attestation_verify_file")
+
+    if att_file is None or orig_file is None:
+        st.info("Upload attestation JSON and the original file to verify.")
+        return
+
+    try:
+        att_obj = parse_attestation_json(att_file.getvalue())
+        pubkey_pem = pubkey_file.getvalue().decode("utf-8", errors="replace") if pubkey_file else None
+        result = verify_attestation(att_obj, file_bytes=orig_file.getvalue(), public_key_pem=pubkey_pem)
+
+        if result.get("ok") is True:
+            st.success("✅ Attestation verified")
+            st.write(f"**Key ID:** {result.get('key_id')}")
+            st.write(f"**Issuer:** {result.get('issuer_source', 'unknown')}")
+            st.write(f"**File SHA-256:** {result.get('actual_sha256')}")
+
+            with st.expander("Verified payload"):
+                st.json(result.get("payload") or {})
+        else:
+            st.error("❌ Verification failed")
+            st.write(f"**Reason:** {result.get('reason')}")
+            if result.get("expected_sha256"):
+                st.write(f"**Expected SHA-256:** {result.get('expected_sha256')}")
+            if result.get("actual_sha256"):
+                st.write(f"**Actual SHA-256:** {result.get('actual_sha256')}")
+            with st.expander("Attestation (raw)"):
+                st.json(att_obj)
+    except AttestationError as e:
+        st.error(str(e))
+    except Exception as e:
+        st.error(f"Verification error: {e}")
+
 # Page Configuration
 # NOTE: `page_icon` sets the browser tab favicon in Streamlit.
 st.set_page_config(page_title="Provity : Trusted Software Validator", page_icon="🛡️", layout="wide")
@@ -419,57 +547,21 @@ with tab_scan:
         st.metric("Risk Score", f"{risk_score}/100")
         st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
 
-        st.markdown("---")
-        st.subheader("Attestation (Signed Scan Result)")
-        if _ATTEST_IMPORT_ERROR:
-            st.warning(f"Attestation unavailable: {_ATTEST_IMPORT_ERROR}")
-        else:
-            try:
-                priv, pub, key_id = ensure_keypair()
-                payload = build_scan_payload(
-                    original_filename=uploaded_file.name,
-                    file_sha256=file_hash,
-                    is_deb=bool(is_deb),
-                    sig_detail=sig_detail,
-                    sig_valid=bool(sig_valid),
-                    sig_info=sig_info if isinstance(sig_info, dict) else {},
-                    clam_detail=clam_detail if isinstance(clam_detail, dict) else None,
-                    clam_state=is_clean,
-                    clam_label=str(virus_name or ""),
-                    artifacts=artifacts,
-                    risk_score=int(risk_score),
-                    risk_level=str(risk_level),
-                    risk_evidence=list(risk_evidence),
-                )
-                attestation = build_attestation(payload, private_key=priv, public_key=pub)
-
-                att_bytes = json.dumps(attestation, indent=2, ensure_ascii=False).encode("utf-8")
-                pub_key_pem = attestation.get("signature", {}).get("public_key_pem", "")
-
-                c1, c2 = st.columns([1.2, 1.0])
-                with c1:
-                    st.download_button(
-                        "Download attestation.json",
-                        data=att_bytes,
-                        file_name=f"attestation_{file_hash[:12]}.json",
-                        mime="application/json",
-                    )
-                    st.caption(f"Signed with key id: {key_id}")
-                with c2:
-                    if isinstance(pub_key_pem, str) and pub_key_pem.strip():
-                        st.download_button(
-                            "Download public key (PEM)",
-                            data=pub_key_pem.encode("utf-8"),
-                            file_name=f"provity_attestation_pubkey_{key_id}.pem",
-                            mime="application/x-pem-file",
-                        )
-
-                with st.expander("Attestation preview"):
-                    st.json(attestation)
-            except AttestationError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Failed to build attestation: {e}")
+        _render_attestation_section(
+            uploaded_filename=uploaded_file.name,
+            file_hash=file_hash,
+            is_deb=bool(is_deb),
+            sig_detail=sig_detail,
+            sig_valid=bool(sig_valid),
+            sig_info=sig_info if isinstance(sig_info, dict) else {},
+            clam_detail=clam_detail if isinstance(clam_detail, dict) else None,
+            clam_state=is_clean,
+            clam_label=str(virus_name or ""),
+            artifacts=artifacts,
+            risk_score=int(risk_score),
+            risk_level=str(risk_level),
+            risk_evidence=list(risk_evidence),
+        )
 
         # Persist scan event (best-effort)
         if db_enabled and db_log_scans:
@@ -510,57 +602,8 @@ with tab_scan:
 
 
 with tab_verify:
-    # ============================================================================
-    # VERIFY TAB: NO DATABASE LOGGING
-    # This tab performs read-only verification of attestations.
-    # It does NOT call insert_scan_event() or write to the database.
-    # All file uploads here are temporary and only used for verification.
-    # ============================================================================
-    
-    st.subheader("Verify Attestation")
-    st.caption("Upload attestation JSON and the original file. Public key (PEM) is optional if using the same Provity instance.")
 
-    if _ATTEST_IMPORT_ERROR:
-        st.error(f"Attestation features unavailable: {_ATTEST_IMPORT_ERROR}")
-    else:
-        pubkey_file = st.file_uploader(
-            "Issuer public key (PEM) - optional",
-            type=["pem"],
-            key="attestation_verify_pubkey",
-            help="Optional. If not provided, uses local trusted issuer key (same Provity instance).",
-        )
-        att_file = st.file_uploader("Attestation file (JSON)", type=["json"], key="attestation_verify")
-        orig_file = st.file_uploader("Original file", key="attestation_verify_file")
-
-        if att_file is None or orig_file is None:
-            st.info("Upload attestation JSON and the original file to verify.")
-        else:
-            try:
-                att_obj = parse_attestation_json(att_file.getvalue())
-                pubkey_pem = pubkey_file.getvalue().decode("utf-8", errors="replace") if pubkey_file else None
-                result = verify_attestation(att_obj, file_bytes=orig_file.getvalue(), public_key_pem=pubkey_pem)
-
-                if result.get("ok") is True:
-                    st.success("✅ Attestation verified")
-                    st.write(f"**Key ID:** {result.get('key_id')}")
-                    st.write(f"**Issuer:** {result.get('issuer_source', 'unknown')}")
-                    st.write(f"**File SHA-256:** {result.get('actual_sha256')}")
-
-                    with st.expander("Verified payload"):
-                        st.json(result.get("payload") or {})
-                else:
-                    st.error("❌ Verification failed")
-                    st.write(f"**Reason:** {result.get('reason')}")
-                    if result.get("expected_sha256"):
-                        st.write(f"**Expected SHA-256:** {result.get('expected_sha256')}")
-                    if result.get("actual_sha256"):
-                        st.write(f"**Actual SHA-256:** {result.get('actual_sha256')}")
-                    with st.expander("Attestation (raw)"):
-                        st.json(att_obj)
-            except AttestationError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Verification error: {e}")
+    _render_verify_attestation_tab()
 
 
 with tab_dashboard:
