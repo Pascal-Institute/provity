@@ -67,9 +67,9 @@ def _guess_app_name(original_filename: str) -> str:
 
 # Page Configuration
 # NOTE: `page_icon` sets the browser tab favicon in Streamlit.
-st.set_page_config(page_title="Provity : Trustured Software Validator", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Provity : Tursted Software Validator", page_icon="🛡️", layout="wide")
 
-st.title("🛡️ Provity : Trustured Software Validator")
+st.title("🛡️ Provity : Tursted Software Validator")
 st.markdown("""
 **Without external network connections**, this tool performs security checks using local server resources.
 1. **Signature Verification**: `osslsigncode` (Authenticode)
