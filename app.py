@@ -424,11 +424,6 @@ with tab_scan:
         if _ATTEST_IMPORT_ERROR:
             st.warning(f"Attestation unavailable: {_ATTEST_IMPORT_ERROR}")
         else:
-            use_timestamp = st.checkbox(
-                "Request RFC 3161 timestamp (requires network)",
-                value=True,
-                help="Obtain a trusted timestamp from an external TSA (Time Stamping Authority). This proves when the scan was performed.",
-            )
             try:
                 priv, pub, key_id = ensure_keypair()
                 payload = build_scan_payload(
@@ -446,7 +441,7 @@ with tab_scan:
                     risk_level=str(risk_level),
                     risk_evidence=list(risk_evidence),
                 )
-                attestation = build_attestation(payload, private_key=priv, public_key=pub, use_timestamp=use_timestamp)
+                attestation = build_attestation(payload, private_key=priv, public_key=pub)
 
                 att_bytes = json.dumps(attestation, indent=2, ensure_ascii=False).encode("utf-8")
                 pub_key_pem = attestation.get("signature", {}).get("public_key_pem", "")
@@ -468,14 +463,6 @@ with tab_scan:
                             file_name=f"provity_attestation_pubkey_{key_id}.pem",
                             mime="application/x-pem-file",
                         )
-
-                # Show timestamp status if requested
-                ts_info = attestation.get("timestamp")
-                if ts_info:
-                    if ts_info.get("token_der_b64"):
-                        st.success(f"✅ Timestamp obtained from {ts_info.get('tsa_url', 'TSA')}")
-                    elif ts_info.get("requested"):
-                        st.warning(f"⚠️ Timestamp request failed: {ts_info.get('error', 'unknown')}")
 
                 with st.expander("Attestation preview"):
                     st.json(attestation)
@@ -558,16 +545,7 @@ with tab_verify:
                     st.write(f"**Key ID:** {result.get('key_id')}")
                     st.write(f"**Issuer:** {result.get('issuer_source', 'unknown')}")
                     st.write(f"**File SHA-256:** {result.get('actual_sha256')}")
-                    
-                    # Show timestamp verification if present
-                    if "timestamp_verified" in result:
-                        if result["timestamp_verified"]:
-                            st.success(f"✅ Timestamp verified: {result.get('timestamp_time', 'N/A')}")
-                        else:
-                            st.warning("⚠️ Timestamp verification failed")
-                            if result.get("timestamp_error"):
-                                st.caption(f"Error: {result['timestamp_error']}")
-                    
+
                     with st.expander("Verified payload"):
                         st.json(result.get("payload") or {})
                 else:

@@ -121,29 +121,6 @@ def test_attestation_missing_pubkey_strict_mode_fails(tmp_path):
     assert res["reason"] == "Missing issuer public key (PEM)."
 
 
-def test_attestation_with_timestamp_request(tmp_path):
-    """Test that timestamp request is attempted (may fail if offline/no openssl)."""
-    priv, pub, _ = ensure_keypair(tmp_path)
-    pub_pem = public_key_pem_bytes(pub).decode("utf-8")
-
-    file_bytes = b"hello-provity"
-    payload = {
-        "type": "provity.scan",
-        "scanned_at": "2025-01-01T00:00:00Z",
-        "file": {"original_filename": "sample.exe", "sha256": sha256_bytes(file_bytes), "is_deb": False},
-        "risk": {"score": 10, "level": "Low", "evidence": ["ok"]},
-    }
-
-    att = build_attestation(payload, private_key=priv, public_key=pub, use_timestamp=True)
-    
-    # Timestamp should be attempted
-    assert "timestamp" in att
-    
-    # Verification should still work regardless of timestamp success
-    res = verify_attestation(att, file_bytes=file_bytes, public_key_pem=pub_pem)
-    assert res["ok"] is True
-
-
 def test_parse_attestation_json(tmp_path):
     priv, pub, _ = ensure_keypair(tmp_path)
     payload = {"type": "provity.scan", "file": {"original_filename": "x", "sha256": "0" * 64, "is_deb": False}}
