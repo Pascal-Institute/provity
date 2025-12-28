@@ -11,10 +11,17 @@ class SandboxError(RuntimeError):
     pass
 
 
-def get_sandbox_controller_url() -> str | None:
+DEFAULT_SANDBOX_CONTROLLER_URL = "http://localhost:8000"
+
+
+def get_sandbox_controller_url(*, default_if_unset: bool = True) -> str | None:
     url = os.getenv("PROVITY_SANDBOX_CONTROLLER_URL")
     if url and url.strip():
         return url.strip().rstrip("/")
+
+    if default_if_unset:
+        return DEFAULT_SANDBOX_CONTROLLER_URL
+
     return None
 
 
@@ -28,7 +35,10 @@ def run_dynamic_scan(
 ) -> dict[str, Any]:
     url = (controller_url or get_sandbox_controller_url() or "").strip().rstrip("/")
     if not url:
-        return {"ok": False, "reason": "Sandbox controller not configured (set PROVITY_SANDBOX_CONTROLLER_URL)"}
+        return {
+            "ok": False,
+            "reason": "Sandbox controller URL is missing (set PROVITY_SANDBOX_CONTROLLER_URL)",
+        }
 
     body = {
         "filename": filename,

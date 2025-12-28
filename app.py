@@ -516,7 +516,10 @@ with tab_scan:
                 "Planned: execute the sample in an isolated Windows VM and summarize runtime behavior (process/file/registry/network)."
             )
             controller_url = get_sandbox_controller_url()
-            st.write(f"**Controller:** {controller_url or 'Not configured (set PROVITY_SANDBOX_CONTROLLER_URL)'}")
+            if os.getenv("PROVITY_SANDBOX_CONTROLLER_URL"):
+                st.write(f"**Controller:** {controller_url}")
+            else:
+                st.write(f"**Controller:** {controller_url} (default; set PROVITY_SANDBOX_CONTROLLER_URL to override)")
 
             dyn_timeout = st.number_input(
                 "Dynamic scan runtime (seconds)",
