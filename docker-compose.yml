@@ -16,3 +16,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  sandbox-controller:
+    build:
+      context: ./sandbox_controller
+    container_name: provity-sandbox-controller
+    environment:
+      # Set to 'mock' to test wiring without a Windows VM.
+      SANDBOX_MODE: ${SANDBOX_MODE:-mock}
+      SANDBOX_MAX_MB: ${SANDBOX_MAX_MB:-10}
+
+      # WinRM target (required when SANDBOX_MODE=winrm)
+      WINRM_HOST: ${WINRM_HOST:-}
+      WINRM_USER: ${WINRM_USER:-}
+      WINRM_PASSWORD: ${WINRM_PASSWORD:-}
+      WINRM_TRANSPORT: ${WINRM_TRANSPORT:-ntlm}
+    ports:
+      - "8000:8000"

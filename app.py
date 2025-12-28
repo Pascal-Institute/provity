@@ -24,6 +24,8 @@ from provity.scanners import (
     scan_deb_package,
 )
 
+from provity.sandbox_client import get_sandbox_controller_url, run_dynamic_scan
+
 try:
     from provity.attestation import (
         AttestationError,
@@ -429,6 +431,8 @@ with tab_scan:
         # 2. Virus Scan & Static Analysis
         with col2:
             st.subheader("2️⃣ Security Threat Detection (Local)")
+
+            st.markdown("**2-1) Static Threat Scan (ClamAV)**")
         
             # ClamAV Scan
             if is_deb and deb_scan is not None:
@@ -505,6 +509,44 @@ with tab_scan:
 
                 st.caption("Raw clamscan output:")
                 st.code(str(scan_log or ""), language="text")
+
+            st.divider()
+            st.markdown("**2-2) Dynamic Threat Scan (Sandbox/VM)**")
+            st.caption(
+                "Planned: execute the sample in an isolated Windows VM and summarize runtime behavior (process/file/registry/network)."
+            )
+            controller_url = get_sandbox_controller_url()
+            st.write(f"**Controller:** {controller_url or 'Not configured (set PROVITY_SANDBOX_CONTROLLER_URL)'}")
+
+            dyn_timeout = st.number_input(
+                "Dynamic scan runtime (seconds)",
+                min_value=5,
+                max_value=300,
+                value=20,
+                step=5,
+                key="dyn_timeout_sec",
+            )
+
+            if st.button("Run dynamic scan", key="dyn_run"):
+                with st.spinner("Running dynamic scan (sandbox/VM)..."):
+                    dyn = run_dynamic_scan(
+                        file_bytes=uploaded_file.getvalue(),
+                        filename=uploaded_file.name,
+                        file_sha256=file_hash,
+                        timeout_sec=int(dyn_timeout),
+                        controller_url=controller_url,
+                    )
+
+                if dyn.get("ok") is True:
+                    st.success("✅ Dynamic scan completed")
+                    st.write(f"**Run ID:** {dyn.get('run_id') or 'N/A'}")
+                    if dyn.get("notes"):
+                        st.caption("; ".join(str(x) for x in (dyn.get("notes") or [])[:5]))
+                    with st.expander("Dynamic scan report"):
+                        st.json(dyn)
+                else:
+                    st.warning("⚠️ Dynamic scan unavailable")
+                    st.caption(str(dyn.get("reason") or "unknown"))
 
         st.markdown("---")
 

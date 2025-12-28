@@ -1,0 +1,200 @@
+from __future__ import annotations
+
+import base64
+import os
+import time
+import uuid
+from typing import Any
+
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+
+try:
+    import winrm  # pywinrm
+except Exception:  # pragma: no cover
+    winrm = None  # type: ignore
+
+app = FastAPI(title="provity-sandbox-controller", version="0.1.0")
+
+
+class ScanRequest(BaseModel):
+    filename: str = Field(..., min_length=1, max_length=260)
+    file_sha256: str = Field(..., min_length=64, max_length=64)
+    file_b64: str = Field(..., min_length=1)
+    timeout_sec: int = Field(20, ge=5, le=300)
+
+
+def _env(name: str, default: str | None = None) -> str | None:
+    v = os.getenv(name)
+    if v is None or not str(v).strip():
+        return default
+    return v
+
+
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {"ok": True, "service": "sandbox-controller"}
+
+
+def _max_bytes() -> int:
+    mb = int(_env("SANDBOX_MAX_MB", "10") or "10")
+    return max(1, mb) * 1024 * 1024
+
+
+def _ps_escape_single_quotes(s: str) -> str:
+    # For single-quoted PowerShell strings: ' -> ''
+    return s.replace("'", "''")
+
+
+def _build_powershell_script(*, b64: str, filename: str, timeout_sec: int) -> str:
+    # Minimal dynamic run + basic observability.
+    # Returns JSON via ConvertTo-Json.
+    safe_name = os.path.basename(filename)
+
+    b64_escaped = _ps_escape_single_quotes(b64)
+    name_escaped = _ps_escape_single_quotes(safe_name)
+
+    return f"""
+$ErrorActionPreference = 'Stop'
+
+$runId = [guid]::NewGuid().ToString()
+$baseDir = 'C:\\provity-sandbox'
+$runDir = Join-Path $baseDir ('run\\' + $runId)
+New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+
+$samplePath = Join-Path $runDir '{name_escaped}'
+
+# Write file from base64
+$bytes = [System.Convert]::FromBase64String('{b64_escaped}')
+[System.IO.File]::WriteAllBytes($samplePath, $bytes)
+
+function Get-ProcSnapshot {{
+    try {{
+        Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine, CreationDate
+    }} catch {{
+        @()
+    }}
+}}
+
+function Get-NetSnapshot {{
+    try {{
+        Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, State, OwningProcess
+    }} catch {{
+        @()
+    }}
+}}
+
+$beforeProc = Get-ProcSnapshot
+$beforeNet = Get-NetSnapshot
+
+$start = Get-Date
+$proc = $null
+$exitCode = $null
+$note = @()
+
+try {{
+    # Attempt to start the sample. Many installers need UI; this is best-effort.
+    $proc = Start-Process -FilePath $samplePath -PassThru
+    Start-Sleep -Seconds {timeout_sec}
+
+    if ($proc -and -not $proc.HasExited) {{
+        try {{
+            Stop-Process -Id $proc.Id -Force
+            $note += 'Process terminated after timeout'
+        }} catch {{
+            $note += ('Failed to terminate process: ' + $_.Exception.Message)
+        }}
+    }}
+
+    if ($proc) {{
+        try {{ $exitCode = $proc.ExitCode }} catch {{ $exitCode = $null }}
+    }}
+}} catch {{
+    $note += ('Execution error: ' + $_.Exception.Message)
+}}
+
+$afterProc = Get-ProcSnapshot
+$afterNet = Get-NetSnapshot
+
+$elapsed = (Get-Date) - $start
+
+# Diff processes by (ProcessId) presence
+$beforeIds = @{{}}
+foreach ($p in $beforeProc) {{ $beforeIds[[string]$p.ProcessId] = $true }}
+$newProc = @()
+foreach ($p in $afterProc) {{
+    if (-not $beforeIds.ContainsKey([string]$p.ProcessId)) {{ $newProc += $p }}
+}}
+
+$result = [ordered]@{{
+    ok = $true
+    run_id = $runId
+    sample_path = $samplePath
+    timeout_sec = {timeout_sec}
+    exit_code = $exitCode
+    elapsed_sec = [int][Math]::Round($elapsed.TotalSeconds)
+    new_processes = $newProc
+    net_connections = $afterNet
+    notes = $note
+}}
+
+$result | ConvertTo-Json -Depth 6
+""".strip()
+
+
+def _run_winrm(*, script: str) -> str:
+    host = _env("WINRM_HOST")
+    user = _env("WINRM_USER")
+    password = _env("WINRM_PASSWORD")
+    transport = _env("WINRM_TRANSPORT", "ntlm")
+
+    if not host or not user or not password:
+        raise RuntimeError("WINRM is not configured (set WINRM_HOST/WINRM_USER/WINRM_PASSWORD)")
+    if winrm is None:
+        raise RuntimeError("pywinrm not installed")
+
+    # NOTE: For MVP we keep this simple. In production, pin TLS, use HTTPS, and avoid plaintext creds.
+    session = winrm.Session(host, auth=(user, password), transport=transport)
+    r = session.run_ps(script)
+    stdout = (r.std_out or b"").decode("utf-8", errors="replace")
+    stderr = (r.std_err or b"").decode("utf-8", errors="replace")
+    if r.status_code != 0:
+        raise RuntimeError(f"WinRM status={r.status_code}. stderr={stderr[:400]}")
+    return stdout.strip() or stderr.strip()
+
+
+@app.post("/scan")
+def scan(req: ScanRequest) -> dict[str, Any]:
+    # Allow a mock mode for wiring/testing without a VM.
+    mode = (_env("SANDBOX_MODE", "winrm") or "winrm").lower()
+
+    raw = base64.b64decode(req.file_b64.encode("ascii"), validate=False)
+    if len(raw) > _max_bytes():
+        return {"ok": False, "reason": "file too large", "max_bytes": _max_bytes()}
+
+    if mode == "mock":
+        return {
+            "ok": True,
+            "run_id": str(uuid.uuid4()),
+            "reason": "mock",
+            "elapsed_sec": 1,
+            "new_processes": [],
+            "net_connections": [],
+            "notes": ["SANDBOX_MODE=mock"],
+        }
+
+    start = time.time()
+    try:
+        ps = _build_powershell_script(b64=req.file_b64, filename=req.filename, timeout_sec=req.timeout_sec)
+        out = _run_winrm(script=ps)
+        # PowerShell outputs JSON; return it as parsed dict if possible.
+        import json
+
+        data = json.loads(out)
+        if isinstance(data, dict):
+            data.setdefault("ok", True)
+            data.setdefault("elapsed_sec", int(time.time() - start))
+            return data
+        return {"ok": True, "raw": data, "elapsed_sec": int(time.time() - start)}
+    except Exception as e:
+        return {"ok": False, "reason": str(e), "elapsed_sec": int(time.time() - start)}
