@@ -543,6 +543,22 @@ with tab_scan:
                 if dyn.get("ok") is True:
                     st.success("✅ Dynamic scan completed")
                     st.write(f"**Run ID:** {dyn.get('run_id') or 'N/A'}")
+                    verdict = str(dyn.get("verdict") or "unknown").lower()
+                    if verdict == "malicious":
+                        st.error("Verdict: MALICIOUS")
+                    elif verdict == "suspicious":
+                        st.warning("Verdict: SUSPICIOUS")
+                    else:
+                        st.info("Verdict: UNKNOWN")
+
+                    detections = dyn.get("detections")
+                    if isinstance(detections, list) and detections:
+                        names = []
+                        for d in detections[:5]:
+                            if isinstance(d, dict) and d.get("threat_name"):
+                                names.append(str(d.get("threat_name")))
+                        st.caption(f"Defender detections: {len(detections)}" + (f" (e.g. {', '.join(names)})" if names else ""))
+
                     if dyn.get("notes"):
                         st.caption("; ".join(str(x) for x in (dyn.get("notes") or [])[:5]))
                     with st.expander("Dynamic scan report"):

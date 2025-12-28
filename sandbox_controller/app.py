@@ -84,6 +84,69 @@ function Get-NetSnapshot {{
     }}
 }}
 
+function Get-NetKey($c) {{
+    try {{
+        return ([string]$c.LocalAddress) + ':' + ([string]$c.LocalPort) + '->' + ([string]$c.RemoteAddress) + ':' + ([string]$c.RemotePort) + '|' + ([string]$c.State) + '|pid=' + ([string]$c.OwningProcess)
+    }} catch {{
+        return ''
+    }}
+}}
+
+function Get-DefenderStatus {{
+    try {{
+        $s = Get-MpComputerStatus -ErrorAction Stop
+        return [pscustomobject]@{{
+            am_service_enabled = $s.AMServiceEnabled
+            antivirus_enabled = $s.AntivirusEnabled
+            antispyware_enabled = $s.AntispywareEnabled
+            realtime_protection_enabled = $s.RealTimeProtectionEnabled
+            signature_last_updated = $s.AntivirusSignatureLastUpdated
+            signature_version = $s.AntivirusSignatureVersion
+            engine_version = $s.AMEngineVersion
+            quick_scan_age = $s.QuickScanAge
+            full_scan_age = $s.FullScanAge
+        }}
+    }} catch {{
+        return $null
+    }}
+}}
+
+function Try-UpdateDefenderSignature {{
+    try {{
+        Update-MpSignature -ErrorAction Stop | Out-Null
+        return $true
+    }} catch {{
+        return $false
+    }}
+}}
+
+function Try-DefenderCustomScan($path) {{
+    try {{
+        Start-MpScan -ScanType CustomScan -ScanPath $path -ErrorAction Stop | Out-Null
+        return $true
+    }} catch {{
+        return $false
+    }}
+}}
+
+function Get-RecentDetections($since) {{
+    $out = @()
+    try {{
+        $raw = Get-MpThreatDetection -ErrorAction Stop | Where-Object {{ $_.InitialDetectionTime -ge $since }}
+        foreach ($t in $raw) {{
+            $out += [pscustomobject]@{{
+                threat_name = $t.ThreatName
+                detection_time = $t.InitialDetectionTime
+                action_success = $t.ActionSuccess
+                resources = $t.Resources
+            }}
+        }}
+    }} catch {{
+        # swallow
+    }}
+    return $out
+}}
+
 $beforeProc = Get-ProcSnapshot
 $beforeNet = Get-NetSnapshot
 
@@ -92,7 +155,29 @@ $proc = $null
 $exitCode = $null
 $note = @()
 
+$defenderStatusBefore = Get-DefenderStatus
+$defenderSignatureUpdated = $false
+$defenderScanAttempted = $false
+
 try {{
+    # Try to improve detection quality: update signatures + custom scan the sample before execution.
+    # Best-effort only; will add a note if it fails.
+    $doSigUpdate = '{os.getenv("SANDBOX_DEFENDER_UPDATE", "0")}'.ToLower() -in @('1','true','yes')
+    $doDefenderScan = '{os.getenv("SANDBOX_DEFENDER_SCAN", "1")}'.ToLower() -in @('1','true','yes')
+    $defenderWaitSec = [int]('{os.getenv("SANDBOX_DEFENDER_WAIT_SEC", "10")}')
+    if ($defenderWaitSec -lt 0) {{ $defenderWaitSec = 0 }}
+    if ($defenderWaitSec -gt 60) {{ $defenderWaitSec = 60 }}
+
+    if ($doSigUpdate) {{
+        $defenderSignatureUpdated = Try-UpdateDefenderSignature
+        if (-not $defenderSignatureUpdated) {{ $note += 'Defender signature update failed or unavailable' }}
+    }}
+
+    if ($doDefenderScan) {{
+        $defenderScanAttempted = Try-DefenderCustomScan $samplePath
+        if (-not $defenderScanAttempted) {{ $note += 'Defender custom scan failed or unavailable' }}
+    }}
+
     # Attempt to start the sample. Many installers need UI; this is best-effort.
     $proc = Start-Process -FilePath $samplePath -PassThru
     Start-Sleep -Seconds {timeout_sec}
@@ -126,6 +211,43 @@ foreach ($p in $afterProc) {{
     if (-not $beforeIds.ContainsKey([string]$p.ProcessId)) {{ $newProc += $p }}
 }}
 
+# Diff TCP connections by key
+$beforeNetKeys = @{{}}
+foreach ($c in $beforeNet) {{
+    $k = Get-NetKey $c
+    if ($k) {{ $beforeNetKeys[$k] = $true }}
+}}
+$newNet = @()
+foreach ($c in $afterNet) {{
+    $k = Get-NetKey $c
+    if ($k -and -not $beforeNetKeys.ContainsKey($k)) {{ $newNet += $c }}
+}}
+
+# Collect Windows Defender detections since start (best-effort)
+$detections = @()
+try {{
+    # Poll for a short window because detections can appear slightly after execution/scan.
+    $since = $start.AddSeconds(-2)
+    $pollStart = Get-Date
+    do {{
+        $detections = Get-RecentDetections $since
+        if ($detections.Count -gt 0) {{ break }}
+        Start-Sleep -Milliseconds 500
+    }} while (((Get-Date) - $pollStart).TotalSeconds -lt [math]::Max(0, $defenderWaitSec))
+}} catch {{
+    $note += ('Defender query failed: ' + $_.Exception.Message)
+}}
+
+$verdict = 'unknown'
+$score = 0
+if ($detections.Count -gt 0) {{
+    $verdict = 'malicious'
+    $score = 100
+}} elseif ($newNet.Count -gt 0 -or $newProc.Count -gt 0) {{
+    $verdict = 'suspicious'
+    $score = 40
+}}
+
 $result = [ordered]@{{
     ok = $true
     run_id = $runId
@@ -133,7 +255,17 @@ $result = [ordered]@{{
     timeout_sec = {timeout_sec}
     exit_code = $exitCode
     elapsed_sec = [int][Math]::Round($elapsed.TotalSeconds)
+    verdict = $verdict
+    score = $score
+    detections = $detections
+    defender = [ordered]@{{
+        scan_attempted = $defenderScanAttempted
+        signature_updated = $defenderSignatureUpdated
+        status_before = $defenderStatusBefore
+        status_after = (Get-DefenderStatus)
+    }}
     new_processes = $newProc
+    new_net_connections = $newNet
     net_connections = $afterNet
     notes = $note
 }}
@@ -178,7 +310,11 @@ def scan(req: ScanRequest) -> dict[str, Any]:
             "run_id": str(uuid.uuid4()),
             "reason": "mock",
             "elapsed_sec": 1,
+            "verdict": "unknown",
+            "score": 0,
+            "detections": [],
             "new_processes": [],
+            "new_net_connections": [],
             "net_connections": [],
             "notes": ["SANDBOX_MODE=mock"],
         }
@@ -194,6 +330,9 @@ def scan(req: ScanRequest) -> dict[str, Any]:
         if isinstance(data, dict):
             data.setdefault("ok", True)
             data.setdefault("elapsed_sec", int(time.time() - start))
+            data.setdefault("verdict", "unknown")
+            data.setdefault("score", 0)
+            data.setdefault("detections", [])
             return data
         return {"ok": True, "raw": data, "elapsed_sec": int(time.time() - start)}
     except Exception as e:
