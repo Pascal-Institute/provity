@@ -14,6 +14,39 @@ Provity is a Streamlit-based interface for locally assessing Windows executables
 - Risk Summary: overall risk level (Low/Medium/High), score (0–100), and evidence list.
 - Temporary files are cleaned after each scan.
 - Optional scan history dashboard backed by PostgreSQL (anonymous logging).
+- Signed attestation export: generates a verifiable JSON “scan certificate” and verifies it inside Provity.
+
+## Attestation (Signed Scan Result)
+
+Provity can export a signed **attestation** (`attestation_*.json`) after each scan.
+An attestation is a JSON bundle of the scan results plus a digital signature. This provides:
+
+- Integrity: if anyone edits the result JSON, signature verification fails.
+- Authenticity: you can verify the result was produced by the Provity instance holding the signing key.
+
+### Key storage (local, offline)
+
+On first use, Provity generates an Ed25519 keypair and stores it locally:
+
+- Default directory: `~/.provity/attestation/`
+  - `ed25519_private_key.pem`
+  - `ed25519_public_key.pem`
+
+You can override the location with:
+
+```bash
+export PROVITY_ATTESTATION_DIR=/path/to/attestation
+```
+
+### Verify inside Provity (Pattern A)
+
+Use the **Verify** tab:
+
+1. Upload the exported `attestation_*.json`
+2. Upload the original file that was scanned
+3. Provity verifies:
+   - The signature over the attestation payload
+   - The file SHA-256 matches the payload
 
 ## Requirements
 

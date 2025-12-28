@@ -5,6 +5,7 @@ import hashlib
 from datetime import datetime
 import re
 import base64
+import json
 
 from provity.icons import (
     _debug_icon_pipeline,
@@ -22,6 +23,25 @@ from provity.scanners import (
     verify_signature_detailed,
     scan_deb_package,
 )
+
+try:
+    from provity.attestation import (
+        AttestationError,
+        build_attestation,
+        build_scan_payload,
+        ensure_keypair,
+        parse_attestation_json,
+        verify_attestation,
+    )
+    _ATTEST_IMPORT_ERROR = None
+except Exception as e:  # pragma: no cover
+    AttestationError = RuntimeError  # type: ignore[assignment]
+    build_attestation = None  # type: ignore[assignment]
+    build_scan_payload = None  # type: ignore[assignment]
+    ensure_keypair = None  # type: ignore[assignment]
+    parse_attestation_json = None  # type: ignore[assignment]
+    verify_attestation = None  # type: ignore[assignment]
+    _ATTEST_IMPORT_ERROR = str(e)
 try:
     from provity.db import ensure_schema, insert_scan_event, fetch_recent_scans, fetch_file_last_seen, fetch_latest_scan_for_hash
     _DB_IMPORT_ERROR = None
@@ -119,7 +139,7 @@ with st.sidebar:
     )
 
 
-tab_scan, tab_dashboard = st.tabs(["Scan", "Dashboard"])
+tab_scan, tab_verify, tab_dashboard = st.tabs(["Scan", "Verify", "Dashboard"])
 
 
 with tab_scan:
@@ -399,6 +419,58 @@ with tab_scan:
         st.metric("Risk Score", f"{risk_score}/100")
         st.markdown("\n".join([f"- {item}" for item in risk_evidence]))
 
+        st.markdown("---")
+        st.subheader("Attestation (Signed Scan Result)")
+        if _ATTEST_IMPORT_ERROR:
+            st.warning(f"Attestation unavailable: {_ATTEST_IMPORT_ERROR}")
+        else:
+            try:
+                priv, pub, key_id = ensure_keypair()
+                payload = build_scan_payload(
+                    original_filename=uploaded_file.name,
+                    file_sha256=file_hash,
+                    is_deb=bool(is_deb),
+                    sig_detail=sig_detail,
+                    sig_valid=bool(sig_valid),
+                    sig_info=sig_info if isinstance(sig_info, dict) else {},
+                    clam_detail=clam_detail if isinstance(clam_detail, dict) else None,
+                    clam_state=is_clean,
+                    clam_label=str(virus_name or ""),
+                    artifacts=artifacts,
+                    risk_score=int(risk_score),
+                    risk_level=str(risk_level),
+                    risk_evidence=list(risk_evidence),
+                )
+                attestation = build_attestation(payload, private_key=priv, public_key=pub)
+
+                att_bytes = json.dumps(attestation, indent=2, ensure_ascii=False).encode("utf-8")
+                pub_key_pem = attestation.get("signature", {}).get("public_key_pem", "")
+
+                c1, c2 = st.columns([1.2, 1.0])
+                with c1:
+                    st.download_button(
+                        "Download attestation.json",
+                        data=att_bytes,
+                        file_name=f"attestation_{file_hash[:12]}.json",
+                        mime="application/json",
+                    )
+                    st.caption(f"Signed with key id: {key_id}")
+                with c2:
+                    if isinstance(pub_key_pem, str) and pub_key_pem.strip():
+                        st.download_button(
+                            "Download public key (PEM)",
+                            data=pub_key_pem.encode("utf-8"),
+                            file_name=f"provity_attestation_pubkey_{key_id}.pem",
+                            mime="application/x-pem-file",
+                        )
+
+                with st.expander("Attestation preview"):
+                    st.json(attestation)
+            except AttestationError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Failed to build attestation: {e}")
+
         # Persist scan event (best-effort)
         if db_enabled and db_log_scans:
             try:
@@ -435,6 +507,44 @@ with tab_scan:
 
         # Cleanup
         os.remove(tmp_path)
+
+
+with tab_verify:
+    st.subheader("Verify Attestation")
+    st.caption("Upload an attestation JSON and the original file to verify signature + file binding.")
+
+    if _ATTEST_IMPORT_ERROR:
+        st.error(f"Attestation features unavailable: {_ATTEST_IMPORT_ERROR}")
+    else:
+        att_file = st.file_uploader("Attestation file (JSON)", type=["json"], key="attestation_verify")
+        orig_file = st.file_uploader("Original file", key="attestation_verify_file")
+
+        if att_file is None or orig_file is None:
+            st.info("Upload both files to verify.")
+        else:
+            try:
+                att_obj = parse_attestation_json(att_file.getvalue())
+                result = verify_attestation(att_obj, file_bytes=orig_file.getvalue())
+
+                if result.get("ok") is True:
+                    st.success("✅ Attestation verified")
+                    st.write(f"**Key ID:** {result.get('key_id')}")
+                    st.write(f"**File SHA-256:** {result.get('actual_sha256')}")
+                    with st.expander("Verified payload"):
+                        st.json(result.get("payload") or {})
+                else:
+                    st.error("❌ Verification failed")
+                    st.write(f"**Reason:** {result.get('reason')}")
+                    if result.get("expected_sha256"):
+                        st.write(f"**Expected SHA-256:** {result.get('expected_sha256')}")
+                    if result.get("actual_sha256"):
+                        st.write(f"**Actual SHA-256:** {result.get('actual_sha256')}")
+                    with st.expander("Attestation (raw)"):
+                        st.json(att_obj)
+            except AttestationError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Verification error: {e}")
 
 
 with tab_dashboard:

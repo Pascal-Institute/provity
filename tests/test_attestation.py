@@ -1,0 +1,87 @@
+import json
+
+from provity.attestation import (
+    ATTESTATION_SCHEMA,
+    ATTESTATION_VERSION,
+    build_attestation,
+    canonical_json_bytes,
+    ensure_keypair,
+    parse_attestation_json,
+    sha256_bytes,
+    verify_attestation,
+)
+
+
+def test_attestation_roundtrip_ok(tmp_path):
+    priv, pub, key_id = ensure_keypair(tmp_path)
+
+    file_bytes = b"hello-provity"
+    payload = {
+        "type": "provity.scan",
+        "scanned_at": "2025-01-01T00:00:00Z",
+        "file": {"original_filename": "sample.exe", "sha256": sha256_bytes(file_bytes), "is_deb": False},
+        "risk": {"score": 10, "level": "Low", "evidence": ["ok"]},
+    }
+
+    att = build_attestation(payload, private_key=priv, public_key=pub)
+    assert att["schema"] == ATTESTATION_SCHEMA
+    assert att["version"] == ATTESTATION_VERSION
+    assert "signature" in att
+
+    res = verify_attestation(att, file_bytes=file_bytes)
+    assert res["ok"] is True
+    assert res["key_id"] == key_id
+    assert res["actual_sha256"] == sha256_bytes(file_bytes)
+
+
+def test_attestation_tamper_fails(tmp_path):
+    priv, pub, _ = ensure_keypair(tmp_path)
+
+    file_bytes = b"hello-provity"
+    payload = {
+        "type": "provity.scan",
+        "scanned_at": "2025-01-01T00:00:00Z",
+        "file": {"original_filename": "sample.exe", "sha256": sha256_bytes(file_bytes), "is_deb": False},
+        "risk": {"score": 10, "level": "Low", "evidence": ["ok"]},
+    }
+
+    att = build_attestation(payload, private_key=priv, public_key=pub)
+
+    # Tamper payload after signing
+    att["payload"]["risk"]["score"] = 99
+
+    res = verify_attestation(att, file_bytes=file_bytes)
+    assert res["ok"] is False
+    assert res["reason"] == "Signature verification failed"
+
+
+def test_attestation_file_hash_mismatch_fails(tmp_path):
+    priv, pub, _ = ensure_keypair(tmp_path)
+
+    payload = {
+        "type": "provity.scan",
+        "scanned_at": "2025-01-01T00:00:00Z",
+        "file": {"original_filename": "sample.exe", "sha256": sha256_bytes(b"A"), "is_deb": False},
+        "risk": {"score": 10, "level": "Low", "evidence": ["ok"]},
+    }
+
+    att = build_attestation(payload, private_key=priv, public_key=pub)
+    res = verify_attestation(att, file_bytes=b"B")
+
+    assert res["ok"] is False
+    assert res["reason"] == "File hash mismatch"
+
+
+def test_parse_attestation_json(tmp_path):
+    priv, pub, _ = ensure_keypair(tmp_path)
+    payload = {"type": "provity.scan", "file": {"original_filename": "x", "sha256": "0" * 64, "is_deb": False}}
+    att = build_attestation(payload, private_key=priv, public_key=pub)
+
+    raw = json.dumps(att).encode("utf-8")
+    obj = parse_attestation_json(raw)
+    assert isinstance(obj, dict)
+
+    # Canonical JSON should be stable
+    b1 = canonical_json_bytes(obj["payload"])
+    b2 = canonical_json_bytes(obj["payload"])
+    assert b1 == b2
