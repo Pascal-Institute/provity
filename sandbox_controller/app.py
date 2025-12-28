@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import base64
 import os
+import tempfile
 import time
 import uuid
 from typing import Any
+from multiprocessing import Process, Queue
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -295,6 +297,169 @@ def _run_winrm(*, script: str) -> str:
     return stdout.strip() or stderr.strip()
 
 
+def _extract_suspicious_api_calls(report: dict[str, Any]) -> dict[str, Any]:
+    suspicious_markers = {
+        "CreateRemoteThread",
+        "CreateRemoteThreadEx",
+        "VirtualAllocEx",
+        "WriteProcessMemory",
+        "ReadProcessMemory",
+        "QueueUserAPC",
+        "SetWindowsHookEx",
+        "NtCreateThreadEx",
+        "URLDownloadToFile",
+        "InternetOpenUrl",
+        "WinHttpOpen",
+        "WinHttpConnect",
+        "WinHttpOpenRequest",
+        "WinHttpSendRequest",
+        "WinHttpReceiveResponse",
+        "CreateService",
+        "StartService",
+        "RegSetValue",
+        "RegSetValueEx",
+        "ShellExecute",
+        "ShellExecuteEx",
+        "WinExec",
+        "CreateProcess",
+        "CreateProcessW",
+    }
+
+    calls: list[str] = []
+    suspicious_hits: list[str] = []
+
+    api_calls = report.get("api_calls")
+    if isinstance(api_calls, list):
+        for c in api_calls:
+            if not isinstance(c, dict):
+                continue
+            api = c.get("api") or c.get("name")
+            if isinstance(api, str) and api:
+                calls.append(api)
+
+    # Some report variants nest calls under "modules" -> "api_calls"
+    if not calls:
+        modules = report.get("modules")
+        if isinstance(modules, list):
+            for m in modules:
+                if not isinstance(m, dict):
+                    continue
+                m_calls = m.get("api_calls")
+                if isinstance(m_calls, list):
+                    for c in m_calls:
+                        if not isinstance(c, dict):
+                            continue
+                        api = c.get("api") or c.get("name")
+                        if isinstance(api, str) and api:
+                            calls.append(api)
+
+    for api in calls:
+        base = api.split("!")[-1]
+        if base in suspicious_markers:
+            suspicious_hits.append(base)
+
+    return {
+        "api_calls_count": len(calls),
+        "suspicious_api_hits": sorted(set(suspicious_hits)),
+        "suspicious_api_hits_count": len(set(suspicious_hits)),
+    }
+
+
+def _speakeasy_worker(*, sample_path: str, result_q: Queue) -> None:
+    try:
+        from speakeasy import Speakeasy  # type: ignore
+
+        se = Speakeasy()
+        module = se.load_module(sample_path)
+        se.run_module(module)
+        report = se.get_report()
+        if not isinstance(report, dict):
+            result_q.put({"ok": False, "reason": "invalid speakeasy report"})
+            return
+        result_q.put({"ok": True, "report": report})
+    except Exception as e:
+        result_q.put({"ok": False, "reason": f"emulation failed: {e}"})
+
+
+def _run_emulate(*, raw: bytes, filename: str, timeout_sec: int) -> dict[str, Any]:
+    run_id = str(uuid.uuid4())
+
+    with tempfile.TemporaryDirectory(prefix="provity-sandbox-") as td:
+        safe_name = os.path.basename(filename) or "sample.bin"
+        sample_path = os.path.join(td, safe_name)
+        with open(sample_path, "wb") as f:
+            f.write(raw)
+
+        q: Queue = Queue(maxsize=1)
+        p = Process(target=_speakeasy_worker, kwargs={"sample_path": sample_path, "result_q": q})
+        start = time.time()
+        p.start()
+        p.join(timeout=max(5, int(timeout_sec)))
+
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=2)
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "reason": "emulation timeout",
+                "elapsed_sec": int(time.time() - start),
+            }
+
+        if q.empty():
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "reason": "emulation produced no result",
+                "elapsed_sec": int(time.time() - start),
+            }
+
+        res = q.get()
+        if not isinstance(res, dict) or res.get("ok") is not True:
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "reason": str((res or {}).get("reason") or "emulation failed"),
+                "elapsed_sec": int(time.time() - start),
+            }
+
+        report = res.get("report")
+        if not isinstance(report, dict):
+            return {
+                "ok": False,
+                "run_id": run_id,
+                "reason": "invalid emulation report",
+                "elapsed_sec": int(time.time() - start),
+            }
+
+        summary = _extract_suspicious_api_calls(report)
+        hits = int(summary.get("suspicious_api_hits_count") or 0)
+        api_calls_count = int(summary.get("api_calls_count") or 0)
+
+        verdict = "unknown"
+        score = 0
+        if hits >= 2:
+            verdict = "malicious"
+            score = 85
+        elif hits == 1 or api_calls_count > 50:
+            verdict = "suspicious"
+            score = 45
+
+        return {
+            "ok": True,
+            "run_id": run_id,
+            "reason": "emulate",
+            "elapsed_sec": int(time.time() - start),
+            "verdict": verdict,
+            "score": score,
+            "detections": [],
+            "emulation": {
+                **summary,
+                "notes": ["SANDBOX_MODE=emulate", "verdict derived from suspicious API usage"],
+            },
+        }
+
+
 @app.post("/scan")
 def scan(req: ScanRequest) -> dict[str, Any]:
     # Allow a mock mode for wiring/testing without a VM.
@@ -318,6 +483,9 @@ def scan(req: ScanRequest) -> dict[str, Any]:
             "net_connections": [],
             "notes": ["SANDBOX_MODE=mock"],
         }
+
+    if mode == "emulate":
+        return _run_emulate(raw=raw, filename=req.filename, timeout_sec=req.timeout_sec)
 
     start = time.time()
     try:
