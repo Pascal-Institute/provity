@@ -565,6 +565,8 @@ with tab_verify:
                             st.success(f"✅ Timestamp verified: {result.get('timestamp_time', 'N/A')}")
                         else:
                             st.warning("⚠️ Timestamp verification failed")
+                            if result.get("timestamp_error"):
+                                st.caption(f"Error: {result['timestamp_error']}")
                     
                     with st.expander("Verified payload"):
                         st.json(result.get("payload") or {})

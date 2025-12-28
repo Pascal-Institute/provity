@@ -565,6 +565,7 @@ def verify_attestation(
     timestamp_info = attestation.get("timestamp")
     timestamp_verified = None
     timestamp_time = None
+    timestamp_error = None
     if isinstance(timestamp_info, dict) and timestamp_info.get("token_der_b64"):
         try:
             token_der = base64.b64decode(timestamp_info["token_der_b64"])
@@ -572,8 +573,11 @@ def verify_attestation(
             ts_result = verify_timestamp_token(canonical, token_der=token_der, tsa_url=timestamp_info.get("tsa_url", ""))
             timestamp_verified = ts_result.get("ok")
             timestamp_time = ts_result.get("timestamp")
-        except Exception:
+            if not timestamp_verified:
+                timestamp_error = ts_result.get("error", "Unknown timestamp verification error")
+        except Exception as e:
             timestamp_verified = False
+            timestamp_error = f"Timestamp verification exception: {str(e)}"
 
     result = {
         "ok": True,
@@ -588,6 +592,8 @@ def verify_attestation(
         result["timestamp_verified"] = timestamp_verified
         if timestamp_time:
             result["timestamp_time"] = timestamp_time
+        if timestamp_error:
+            result["timestamp_error"] = timestamp_error
 
     return result
 
