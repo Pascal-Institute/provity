@@ -338,7 +338,9 @@ def verify_timestamp_token(
             output = result.stdout + result.stderr
 
             if "Verification: OK" not in output:
-                return {"ok": False, "error": "Timestamp verification failed"}
+                # Include detailed error output from openssl
+                error_msg = f"Timestamp verification failed. OpenSSL output: {output[:500]}"
+                return {"ok": False, "error": error_msg}
 
             # Extract timestamp from output
             match = re.search(r"Time stamp: (.+)", output)
