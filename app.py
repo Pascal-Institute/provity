@@ -524,31 +524,32 @@ with tab_scan:
 
 with tab_verify:
     st.subheader("Verify Attestation")
-    st.caption("Upload issuer public key (PEM), attestation JSON, and the original file.")
+    st.caption("Upload attestation JSON and the original file. Public key (PEM) is optional if using the same Provity instance.")
 
     if _ATTEST_IMPORT_ERROR:
         st.error(f"Attestation features unavailable: {_ATTEST_IMPORT_ERROR}")
     else:
         pubkey_file = st.file_uploader(
-            "Issuer public key (PEM)",
+            "Issuer public key (PEM) - optional",
             type=["pem"],
             key="attestation_verify_pubkey",
-            help="Use the PEM exported from the Scan tab (or a pinned issuer public key distributed by your org).",
+            help="Optional. If not provided, uses local trusted issuer key (same Provity instance).",
         )
         att_file = st.file_uploader("Attestation file (JSON)", type=["json"], key="attestation_verify")
         orig_file = st.file_uploader("Original file", key="attestation_verify_file")
 
-        if pubkey_file is None or att_file is None or orig_file is None:
-            st.info("Upload public key (PEM), attestation JSON, and the original file to verify.")
+        if att_file is None or orig_file is None:
+            st.info("Upload attestation JSON and the original file to verify.")
         else:
             try:
                 att_obj = parse_attestation_json(att_file.getvalue())
-                pubkey_pem = pubkey_file.getvalue().decode("utf-8", errors="replace")
+                pubkey_pem = pubkey_file.getvalue().decode("utf-8", errors="replace") if pubkey_file else None
                 result = verify_attestation(att_obj, file_bytes=orig_file.getvalue(), public_key_pem=pubkey_pem)
 
                 if result.get("ok") is True:
                     st.success("✅ Attestation verified")
                     st.write(f"**Key ID:** {result.get('key_id')}")
+                    st.write(f"**Issuer:** {result.get('issuer_source', 'unknown')}")
                     st.write(f"**File SHA-256:** {result.get('actual_sha256')}")
                     
                     # Show timestamp verification if present

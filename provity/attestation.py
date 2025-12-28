@@ -472,9 +472,16 @@ def verify_attestation(
     attestation: dict[str, Any],
     *,
     file_bytes: bytes,
-    public_key_pem: str | None,
+    public_key_pem: str | None = None,
+    allow_local_trusted_issuer: bool = True,
 ) -> dict[str, Any]:
     """Verify an attestation and its binding to the provided file bytes.
+
+    Args:
+        attestation: The attestation object to verify
+        file_bytes: Original file bytes for hash binding check
+        public_key_pem: Explicit issuer public key (PEM). If None, falls back to local trusted issuer.
+        allow_local_trusted_issuer: If True and public_key_pem is None, use local keypair as trusted issuer.
 
     Returns a structured dict suitable for UI rendering.
     """
@@ -515,11 +522,32 @@ def verify_attestation(
             "actual_sha256": actual_sha256,
         }
 
-    # Public key MUST be provided by the verifier (pinned trust anchor).
+    # Public key resolution:
+    # 1. Explicit PEM provided by verifier (highest priority)
+    # 2. Local trusted issuer (same Provity instance) if allowed
     # We intentionally do NOT trust embedded keys in the attestation.
     pk_pem = public_key_pem
+    used_local_issuer = False
+    
     if not pk_pem or not str(pk_pem).strip():
-        return {"ok": False, "reason": "Missing issuer public key (PEM)."}
+        if allow_local_trusted_issuer:
+            # Use local keypair as trusted issuer
+            try:
+                _, local_pub, local_key_id = ensure_keypair()
+                pk_pem = public_key_pem_bytes(local_pub).decode("utf-8")
+                used_local_issuer = True
+                
+                # Security: verify key_id matches attestation to prevent accepting wrong local key
+                att_key_id = sig_block.get("key_id")
+                if att_key_id and att_key_id != local_key_id:
+                    return {
+                        "ok": False,
+                        "reason": f"Local issuer key mismatch (expected {att_key_id[:8]}..., got {local_key_id[:8]}...)",
+                    }
+            except Exception as e:
+                return {"ok": False, "reason": f"Failed to load local trusted issuer: {e}"}
+        else:
+            return {"ok": False, "reason": "Missing issuer public key (PEM)."}
 
     try:
         pub_key = serialization.load_pem_public_key(pk_pem.encode("utf-8"))
@@ -552,6 +580,7 @@ def verify_attestation(
         "reason": "OK",
         "actual_sha256": actual_sha256,
         "key_id": sig_block.get("key_id") or public_key_id(pub_key),
+        "issuer_source": "local trusted issuer" if used_local_issuer else "provided PEM",
         "payload": payload,
     }
 

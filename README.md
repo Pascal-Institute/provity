@@ -42,13 +42,21 @@ export PROVITY_ATTESTATION_DIR=/path/to/attestation
 
 Use the **Verify** tab:
 
-1. Upload the issuer public key (PEM) - downloaded from the Scan tab
-2. Upload the exported `attestation_*.json`
-3. Upload the original file that was scanned
+1. Upload the exported `attestation_*.json`
+2. Upload the original file that was scanned
+3. (Optional) Upload the issuer public key (PEM)
+   - If not provided, Provity uses the **local trusted issuer** (same Provity instance)
+   - For external verification (different PC/organization), provide the PEM explicitly
 4. Provity verifies:
-   - The signature over the attestation payload (using the pinned issuer public key)
+   - The signature over the attestation payload (using the pinned issuer public key or local key)
    - The file SHA-256 matches the payload
    - The RFC 3161 timestamp token (if present)
+
+**Trusted Issuer Resolution:**
+
+- Explicit PEM upload (highest priority) - use for cross-organization verification
+- Local keypair (same Provity instance) - convenient for internal verification
+- Embedded keys in attestation are **never** trusted for security
 
 ### RFC 3161 Timestamps (optional)
 
