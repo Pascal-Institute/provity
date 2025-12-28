@@ -11,6 +11,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout
@@ -27,7 +29,7 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest -q
+        run: python -m pytest -q
 
   deploy:
     needs: test
