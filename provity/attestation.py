@@ -186,6 +186,32 @@ def get_tsa_url() -> str:
     return os.getenv("PROVITY_TSA_URL") or DEFAULT_TSA_URL
 
 
+def _openssl_minimal_config_text() -> str:
+    # OpenSSL 3.x may require a provider section; an empty config can break
+    # on some builds. Keep this minimal and self-contained.
+    return (
+        "openssl_conf = openssl_init\n"
+        "\n"
+        "[openssl_init]\n"
+        "providers = provider_sect\n"
+        "\n"
+        "[provider_sect]\n"
+        "default = default_sect\n"
+        "\n"
+        "[default_sect]\n"
+        "activate = 1\n"
+    )
+
+
+def _maybe_certifi_ca_file() -> str | None:
+    try:
+        import certifi  # type: ignore
+
+        return certifi.where()
+    except Exception:
+        return None
+
+
 def request_timestamp_token(
     data: bytes,
     *,
@@ -230,6 +256,15 @@ def request_timestamp_token(
         import subprocess
         import tempfile
 
+        # Some OpenSSL builds ship a config that includes missing directories,
+        # which can break verification. Force a minimal config for subprocesses.
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".cnf", encoding="utf-8") as f:
+            f.write(_openssl_minimal_config_text())
+            openssl_conf_path = f.name
+
+        openssl_env = os.environ.copy()
+        openssl_env["OPENSSL_CONF"] = openssl_conf_path
+
         with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".dat") as f:
             f.write(data)
             data_path = f.name
@@ -246,6 +281,7 @@ def request_timestamp_token(
                 ["openssl", "ts", "-query", "-data", data_path, "-sha256", "-out", tsq_path],
                 check=True,
                 capture_output=True,
+                env=openssl_env,
                 timeout=5,
             )
 
@@ -271,6 +307,7 @@ def request_timestamp_token(
                 ["openssl", "ts", "-reply", "-in", tsr_path, "-text"],
                 capture_output=True,
                 text=True,
+                env=openssl_env,
                 timeout=5,
             )
 
@@ -284,7 +321,7 @@ def request_timestamp_token(
             }
 
         finally:
-            for p in [data_path, tsq_path, tsr_path]:
+            for p in [data_path, tsq_path, tsr_path, openssl_conf_path]:
                 try:
                     os.unlink(p)
                 except Exception:
@@ -318,6 +355,15 @@ def verify_timestamp_token(
         import tempfile
         import re
 
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".cnf", encoding="utf-8") as f:
+            f.write(_openssl_minimal_config_text())
+            openssl_conf_path = f.name
+
+        openssl_env = os.environ.copy()
+        openssl_env["OPENSSL_CONF"] = openssl_conf_path
+
+        ca_file = _maybe_certifi_ca_file()
+
         with tempfile.NamedTemporaryFile(mode="wb", delete=False, suffix=".dat") as f:
             f.write(data)
             data_path = f.name
@@ -328,10 +374,15 @@ def verify_timestamp_token(
 
         try:
             # Verify timestamp token
+            cmd = ["openssl", "ts", "-verify", "-data", data_path, "-in", tsr_path, "-text"]
+            if ca_file:
+                cmd.extend(["-CAfile", ca_file])
+
             result = subprocess.run(
-                ["openssl", "ts", "-verify", "-data", data_path, "-in", tsr_path, "-text"],
+                cmd,
                 capture_output=True,
                 text=True,
+                env=openssl_env,
                 timeout=5,
             )
 
@@ -353,7 +404,7 @@ def verify_timestamp_token(
             }
 
         finally:
-            for p in [data_path, tsr_path]:
+            for p in [data_path, tsr_path, openssl_conf_path]:
                 try:
                     os.unlink(p)
                 except Exception:
